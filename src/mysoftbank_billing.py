@@ -26,8 +26,24 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 load_dotenv()
 
-# スプレッドシートID（URLの /d/〜/edit の部分）
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1zf_4GNx5kRzRGLXQu0MEPk4kyjjj9R7gE2wS78qEm7c")
+# スプレッドシートURL or ID（環境変数 SPREADSHEET_URL または SPREADSHEET_ID で設定）
+def _resolve_spreadsheet_id() -> str:
+    url = os.environ.get("SPREADSHEET_URL", "").strip()
+    if url:
+        m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
+        if m:
+            return m.group(1)
+    sid = os.environ.get("SPREADSHEET_ID", "").strip()
+    if sid:
+        return sid
+    logging.getLogger(__name__).error(
+        "スプレッドシートが設定されていません。.env に以下のいずれかを設定してください:\n"
+        "  SPREADSHEET_URL=https://docs.google.com/spreadsheets/d/xxxxx/edit\n"
+        "  SPREADSHEET_ID=xxxxx"
+    )
+    sys.exit(1)
+
+SPREADSHEET_ID = _resolve_spreadsheet_id()
 BASE_SAVE_PATH = os.environ.get("BASE_SAVE_PATH")
 # ダウンロード対象月 (YYYYMM)。未指定時は前月
 TARGET_MONTH = os.environ.get("TARGET_MONTH")
