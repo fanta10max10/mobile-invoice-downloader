@@ -1,0 +1,1095 @@
+#!/usr/bin/env python3
+"""
+My SoftBank 料金明細PDF自動ダウンロードスクリプト
+
+前提:
+  - アカウント情報はGoogleスプレッドシートの「ウェブに公開」CSV URLから取得
+  - PDFはGoogleドライブ（ローカル）に年月フォルダ構成で保存
+  - 2段階認証(セキュリティ番号)はターミナルのinput()で手動入力
+"""
+
+import os
+import re
+import sys
+import time
+import logging
+from pathlib import Path
+from datetime import datetime, timedelta
+
+import pandas as pd
+from dotenv import load_dotenv
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+
+# ─── 設定 ───────────────────────────────────────────────
+
+load_dotenv()
+
+SPREADSHEET_CSV_URL = os.environ.get("SPREADSHEET_CSV_URL")
+BASE_SAVE_PATH = os.environ.get("BASE_SAVE_PATH")
+# ダウンロード対象月 (YYYYMM)。未指定時は前月
+TARGET_MONTH = os.environ.get("TARGET_MONTH")
+# ヘッドレスモード (デフォルト: true)
+HEADLESS = os.environ.get("HEADLESS", "true").lower() in ("true", "1", "yes")
+# セキュリティ番号入力のタイムアウト(秒)
+SECURITY_CODE_TIMEOUT = int(os.environ.get("SECURITY_CODE_TIMEOUT", "300"))
+
+LOGIN_URL = "https://my.softbank.jp/msb/d/webLink/doSend/MSB010000"
+# ログイン後の実際のドメイン
+WCO_BASE = "https://bl11.my.softbank.jp/wco"
+# 書面発行ページ
+CERTIFICATE_URL = f"{WCO_BASE}/certificate/WCO250"
+# 自分で印刷する（無料）ページ
+BILL_PDF_URL = f"{WCO_BASE}/external/goBillInfoPdf"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+log = logging.getLogger(__name__)
+
+
+# ─── ユーティリティ ──────────────────────────────────────
+
+def get_target_month() -> tuple[str, str]:
+    """対象の年月を (year, month) 文字列で返す"""
+    if TARGET_MONTH:
+        ym = TARGET_MONTH.strip()
+        return ym[:4], ym[4:6]
+    # 未指定なら前月
+    today = datetime.today()
+    first = today.replace(day=1)
+    prev = first - timedelta(days=1)
+    return str(prev.year), f"{prev.month:02d}"
+
+
+def strip_hyphens(phone: str) -> str:
+    """電話番号からハイフンを除去する (例: 090-4769-5015 → 09047695015)"""
+    return re.sub(r"[-\s\u2010-\u2015\u2212\uFF0D]", "", phone)
+
+
+def read_urls_from_rtf() -> list[str]:
+    """RTFファイルからすべてのURLを抽出する"""
+    rtf_path = Path(__file__).parent / "MySoftBank_アカウント管理スプシURL.rtf"
+    if not rtf_path.exists():
+        return []
+    raw = rtf_path.read_text(encoding="utf-8", errors="ignore")
+    return re.findall(r"(https?://[^\s}\\]+)", raw)
+
+
+def resolve_csv_url() -> str:
+    """スプレッドシートのCSV URLを取得する。
+    1. 環境変数 SPREADSHEET_CSV_URL
+    2. 同ディレクトリの MySoftBank_アカウント管理スプシURL.rtf
+    の順に探す。
+    """
+    # 環境変数から
+    url = SPREADSHEET_CSV_URL
+    if url:
+        return url.strip()
+
+    # RTFファイルから（最初のURLをaccounts用として使う）
+    urls = read_urls_from_rtf()
+    if urls:
+        log.info("RTFファイルからCSV URLを取得しました")
+        return urls[0]
+
+    log.error(
+        "スプレッドシートCSV URLが見つかりません。\n"
+        "  環境変数 SPREADSHEET_CSV_URL を設定するか、\n"
+        "  同ディレクトリに MySoftBank_アカウント管理スプシURL.rtf を配置してください。"
+    )
+    sys.exit(1)
+
+
+def find_gdrive_local_root() -> Path | None:
+    """ローカルのGoogleドライブ同期ルート（マイドライブ）を探す"""
+    cloud_storage = Path.home() / "Library" / "CloudStorage"
+    if not cloud_storage.exists():
+        return None
+    for d in cloud_storage.iterdir():
+        if d.name.startswith("GoogleDrive-"):
+            my_drive = d / "マイドライブ"
+            if my_drive.exists():
+                return my_drive
+            # 英語環境
+            my_drive_en = d / "My Drive"
+            if my_drive_en.exists():
+                return my_drive_en
+    return None
+
+
+def drive_url_to_local_path(url: str) -> str | None:
+    """Google DriveのフォルダURLからローカルパスに変換する。
+    フォルダIDをxattrで直接チェック（RTFファイル横のマッピングファイルも参照）。
+    """
+    import subprocess
+
+    # URLからフォルダIDを抽出
+    m = re.search(r"/folders/([a-zA-Z0-9_-]+)", url)
+    if not m:
+        return None
+    folder_id = m.group(1)
+    log.info(f"Google DriveフォルダID: {folder_id}")
+
+    # マッピングファイル（drive_path_map.txt）があればそこから引く
+    map_file = Path(__file__).parent / "drive_path_map.txt"
+    if map_file.exists():
+        for line in map_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("=", 1)
+            if len(parts) == 2 and parts[0].strip() == folder_id:
+                local = parts[1].strip()
+                if Path(local).is_dir():
+                    log.info(f"マッピングファイルからローカルパスを取得: {local}")
+                    return local
+
+    # Googleドライブルートからの相対パスでxattrチェック（浅い階層のみ）
+    gdrive_root = find_gdrive_local_root()
+    if gdrive_root:
+        try:
+            result = subprocess.run(
+                ["xattr", "-p", "com.google.drivefs.item-id#S", str(gdrive_root)],
+                capture_output=True, text=True, timeout=3,
+            )
+        except Exception:
+            pass
+
+    return None
+
+
+def resolve_save_path() -> str:
+    """PDF保存先パスを取得する。
+    優先順:
+      1. スプレッドシートの「PDF保存先」列（最初の非空値）
+         - ローカルパス（/で始まる）: そのまま使用
+         - Google DriveのURL: マッピングファイル参照→ローカルパスに変換
+      2. 環境変数 BASE_SAVE_PATH
+    """
+    csv_url = resolve_csv_url()
+    try:
+        df = pd.read_csv(csv_url)
+        df.columns = df.columns.str.strip()
+        if "PDF保存先" in df.columns:
+            paths = df["PDF保存先"].dropna().astype(str).str.strip()
+            paths = paths[paths != ""]
+            if len(paths) > 0:
+                save_path = paths.iloc[0]
+
+                # Google DriveのURLが入っている場合、ローカルパスに変換
+                if save_path.startswith("https://"):
+                    local = drive_url_to_local_path(save_path)
+                    if local:
+                        return local
+                    log.warning(
+                        f"Google DriveのURLからローカルパスを自動変換できませんでした。\n"
+                        f"  URL: {save_path}"
+                    )
+                    # フォールバック: 環境変数を試す前に終わらない
+                elif Path(save_path).is_absolute():
+                    log.info(f"スプレッドシートから保存先を取得: {save_path}")
+                    return save_path
+    except Exception as e:
+        log.warning(f"スプレッドシートからの保存先取得に失敗: {e}")
+
+    if BASE_SAVE_PATH:
+        return BASE_SAVE_PATH
+
+    log.error(
+        "PDF保存先が設定されていません。以下のいずれかを設定してください:\n"
+        "  1. スプレッドシートの「PDF保存先」列にMac上のフォルダパスを記入\n"
+        "     例: /Users/yamamoto/Library/CloudStorage/GoogleDrive-.../マイドライブ/確定申告系/2026/SoftBank請求書\n"
+        "  2. 同ディレクトリに drive_path_map.txt を作成（フォルダID=ローカルパス）\n"
+        "  3. 環境変数 BASE_SAVE_PATH を設定"
+    )
+    sys.exit(1)
+
+
+def load_accounts() -> pd.DataFrame:
+    """スプレッドシートCSV URLからアカウント情報を読み込む"""
+    csv_url = resolve_csv_url()
+    log.info("スプレッドシートからアカウント情報を読み込み中...")
+    df = pd.read_csv(csv_url)
+    # ヘッダー正規化 (前後の空白除去)
+    df.columns = df.columns.str.strip()
+    required = {"phone_number", "password"}
+    missing = required - set(df.columns)
+    if missing:
+        log.error(f"スプレッドシートに必要なカラムがありません: {missing}")
+        log.error(f"現在のカラム: {list(df.columns)}")
+        sys.exit(1)
+    # 電話番号のハイフンを除去
+    df["phone_number"] = df["phone_number"].astype(str).apply(strip_hyphens)
+    log.info(f"  {len(df)} 件のアカウントを読み込みました")
+    return df
+
+
+CODE_FILE = Path("/tmp/softbank_security_code.txt")
+SESSION_FILE = Path("/tmp/softbank_session.json")
+
+
+def ask_security_code(phone_number: str) -> str | None:
+    """セキュリティ番号を取得する。
+    インタラクティブ環境: terminal input()
+    非インタラクティブ環境: /tmp/softbank_security_code.txt をポーリング
+    """
+    # 念のため古いファイルを削除
+    if CODE_FILE.exists():
+        CODE_FILE.unlink()
+
+    print("\n" + "=" * 60)
+    print(f"  📱 【{phone_number}】")
+    print(f"  SMSに届いた3桁のセキュリティ番号を入力してください")
+    print(f"  ターミナル入力 または 以下のコマンドで渡してください:")
+    print(f"    echo '123' > /tmp/softbank_security_code.txt")
+    print("=" * 60)
+
+    import sys
+    if sys.stdin.isatty():
+        # インタラクティブ環境: 直接入力
+        try:
+            code = input("  セキュリティ番号（3桁）: ").strip()
+            if code:
+                return code
+        except (EOFError, KeyboardInterrupt):
+            pass
+    else:
+        # 非インタラクティブ環境 (Bashツール等): ファイルをポーリング
+        log.info(f"  非インタラクティブ環境を検出。ファイルの出現を待機中...")
+        log.info(f"  別ターミナルで: echo '123' > /tmp/softbank_security_code.txt")
+
+    # ファイルのポーリング (最大180秒)
+    deadline = time.time() + SECURITY_CODE_TIMEOUT
+    last_log = time.time()
+    while time.time() < deadline:
+        if CODE_FILE.exists():
+            try:
+                code = CODE_FILE.read_text(encoding="utf-8").strip()
+                CODE_FILE.unlink()
+                if code:
+                    log.info(f"  セキュリティ番号をファイルから取得しました")
+                    return code
+            except Exception:
+                pass
+        now = time.time()
+        if now - last_log >= 15:
+            remaining = int(deadline - now)
+            log.info(f"  セキュリティ番号待機中... 残り{remaining}秒")
+            last_log = now
+        time.sleep(1)
+
+    log.error("  セキュリティ番号の入力がタイムアウトしました")
+    return None
+
+
+def sanitize_amount(text: str) -> str:
+    """請求金額テキストから数字だけ抽出して「○○円」形式にする"""
+    digits = re.sub(r"[^\d]", "", text)
+    if digits:
+        return f"{int(digits)}円"
+    return ""
+
+
+def build_filename(year: str, month: str, phone: str, amount: str = "") -> str:
+    """電子帳簿保存法準拠のファイル名を生成する"""
+    base = f"{year}{month}_SoftBank_{phone}"
+    if amount:
+        base += f"_{amount}"
+    else:
+        base += "_利用料金明細"
+    return base + ".pdf"
+
+
+def _save_debug_screenshot(
+    page, save_dir: Path, phone: str, year: str, month: str,
+    error_type: str, error_detail: str,
+) -> None:
+    """デバッグ用スクリーンショットを {base_path}/debug/ に保存する。
+    base_path は save_dir の2階層上（save_dir = base_path/YYYY/MM）。
+    ファイル名にエラー種別を含め、詳細をテキストファイルにも記録する。
+    """
+    try:
+        now = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_path = save_dir.parent.parent  # base_path/YYYY/MM → base_path
+        debug_dir = base_path / "debug" / f"debug_{now}"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+        # スクリーンショット保存
+        safe_type = re.sub(r'[\\/:*?"<>|]', "_", error_type)
+        png_name = f"{phone}_{year}{month}_{safe_type}.png"
+        png_path = debug_dir / png_name
+        page.screenshot(path=str(png_path), full_page=True)
+        log.error(f"  デバッグスクリーンショットを保存: {png_path}")
+
+        # エラー詳細をテキストに記録
+        detail_path = debug_dir / f"{phone}_{year}{month}_{safe_type}.txt"
+        current_url = ""
+        try:
+            current_url = page.url
+        except Exception:
+            pass
+        detail_path.write_text(
+            f"電話番号: {phone}\n"
+            f"対象月: {year}年{month}月\n"
+            f"エラー種別: {error_type}\n"
+            f"エラー詳細: {error_detail}\n"
+            f"発生日時: {now}\n"
+            f"ページURL: {current_url}\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def ensure_save_dir(base_path: str, year: str, month: str) -> Path:
+    """保存先ディレクトリを作成して返す (base_path/year/month)"""
+    save_dir = Path(base_path) / year / month
+    save_dir.mkdir(parents=True, exist_ok=True)
+    return save_dir
+
+
+# ─── メイン処理 ──────────────────────────────────────────
+
+def check_already_downloaded(save_dir: Path, year: str, month: str, phone: str) -> bool:
+    """指定の電話番号・月のPDFが既にダウンロード済みかチェックする"""
+    pattern = f"{year}{month}_SoftBank_{phone}_*.pdf"
+    existing = list(save_dir.glob(pattern))
+    if existing:
+        log.info(f"  既にダウンロード済み: {existing[0].name}  → スキップ")
+        return True
+    return False
+
+
+def _js_click(page, selector: str) -> bool:
+    """JavaScriptでクリックする（装飾divのオーバーレイ対策）"""
+    try:
+        page.evaluate(f'document.querySelector("{selector}")?.click()')
+        return True
+    except Exception:
+        return False
+
+
+def _click_any_button(page, locator, label: str = "ボタン", text_hint: str = "") -> bool:
+    """ボタンをクリックする。force=True → テキスト検索 → JS click の順に試す。
+    SoftBankのボタンは <a> タグ / <input> / <button> / <div> など多様なので全パターン対応。
+    """
+    # 1) locator で force click
+    try:
+        locator.first.click(force=True)
+        log.info(f"  {label}をクリックしました (force)")
+        return True
+    except Exception as e:
+        log.info(f"  {label} force click 失敗: {e}")
+
+    # 2) テキストヒントがあればテキストで探してクリック
+    if text_hint:
+        try:
+            text_elem = page.get_by_text(text_hint, exact=False).first
+            if text_elem.is_visible(timeout=3000):
+                text_elem.click(force=True)
+                log.info(f"  {label}をクリックしました (テキスト検索: {text_hint})")
+                return True
+        except Exception:
+            pass
+
+    # 3) JSフォールバック: 幅広い要素を探す
+    try:
+        hint_js = text_hint.replace('"', '\\"') if text_hint else ""
+        clicked = page.evaluate(f"""() => {{
+            // input[type="submit"] or button[type="submit"]
+            let btn = document.querySelector('input[type="submit"]')
+                   || document.querySelector('button[type="submit"]');
+            if (btn) {{ btn.click(); return 'submit'; }}
+            // テキストヒントで <a> タグを探す
+            const hint = "{hint_js}";
+            if (hint) {{
+                const links = document.querySelectorAll('a');
+                for (const a of links) {{
+                    if (a.textContent && a.textContent.includes(hint)) {{
+                        a.click(); return 'link';
+                    }}
+                }}
+                // 全要素から探す
+                const all = document.querySelectorAll('*');
+                for (const el of all) {{
+                    if (el.textContent && el.textContent.trim() === hint) {{
+                        el.click(); return 'element';
+                    }}
+                }}
+            }}
+            // フォームを直接submit
+            const form = document.querySelector('form');
+            if (form) {{ form.submit(); return 'form'; }}
+            return null;
+        }}""")
+        if clicked:
+            log.info(f"  {label}をクリックしました (JS: {clicked})")
+            return True
+    except Exception as e:
+        log.error(f"  {label}のクリックに失敗: {e}")
+    return False
+
+
+def _wait_for_page_stable(page, timeout: int = 10) -> None:
+    """ページが安定するまで待つ（networkidle + sleep）"""
+    try:
+        page.wait_for_load_state("networkidle", timeout=timeout * 1000)
+    except Exception:
+        pass
+    time.sleep(2)
+
+
+def _get_page_text(page) -> str:
+    """ページのテキストを安全に取得する"""
+    try:
+        return page.evaluate("() => document.body.innerText || ''")
+    except Exception:
+        return ""
+
+
+def _click_send_button(page) -> str | None:
+    """「送信する」ボタンをJSでクリックする。クリックした要素の説明を返す。"""
+    try:
+        return page.evaluate("""() => {
+            // <a>タグで「送信する」を含むもの
+            for (const a of document.querySelectorAll('a')) {
+                if ((a.textContent || '').includes('送信する')) {
+                    a.click(); return 'a: ' + a.textContent.trim();
+                }
+            }
+            // input[type="submit"] で「ログイン」以外
+            const submit = document.querySelector('input[type="submit"]');
+            if (submit && !(submit.value || '').includes('ログイン')) {
+                submit.click(); return 'input-submit: ' + submit.value;
+            }
+            // button[type="submit"]
+            for (const btn of document.querySelectorAll('button[type="submit"]')) {
+                if (!(btn.textContent || '').includes('ログイン')) {
+                    btn.click(); return 'button: ' + btn.textContent.trim();
+                }
+            }
+            // セキュリティ関連フォームをsubmit
+            for (const form of document.querySelectorAll('form')) {
+                const action = form.action || '';
+                if (action.includes('security') || action.includes('sendTel') || action.includes('confirm')) {
+                    form.submit(); return 'form-submit: ' + action;
+                }
+            }
+            return null;
+        }""")
+    except Exception:
+        return None
+
+
+def _handle_security_code_flow(page, phone_number: str, password: str = "") -> bool:
+    """セキュリティ番号の送信→入力→確認の一連のフローを処理する。
+    認証ページ(id.my.softbank.jp)にいる場合に呼ばれる。
+    ループで各ページ状態を判定しながら処理する。成功時 True を返す。
+
+    対応パターン:
+      A: ラジオ選択 → 送信 → 確認ページ → 送信 → 入力 → 本人確認
+      B: ラジオなし確認ページ → 送信 → 入力 → 本人確認
+      C: 直接セキュリティ番号入力ページ
+    """
+    log.info("セキュリティ番号フロー開始...")
+    last4 = phone_number[-4:]
+
+    for attempt in range(8):  # 最大8ステップ
+        _wait_for_page_stable(page)
+        current_url = page.url
+        log.info(f"  [ステップ{attempt+1}] URL: {current_url}")
+
+        # 認証ページを離れていれば完了
+        if "id.my.softbank.jp" not in current_url:
+            log.info("  認証フロー完了！")
+            return True
+
+        page_text = _get_page_text(page)
+
+        # ── パターンC: セキュリティ番号入力欄がある ──
+        try:
+            sec_input = (
+                page.locator('input[maxlength="3"]')
+                .or_(page.locator('input[name="securityNumber"]'))
+                .or_(page.locator('input[name="security_number"]'))
+                .or_(page.locator('input[name="confirmationNumber"]'))
+            )
+            if sec_input.first.is_visible(timeout=2000):
+                log.info("  セキュリティ番号入力欄を検出")
+                code = ask_security_code(phone_number)
+                if not code:
+                    log.warning("  セキュリティ番号が入力されませんでした")
+                    return False
+                sec_input.first.fill(code)
+                log.info("  セキュリティ番号を入力しました")
+                # 本人確認ボタンをクリック
+                # NOTE: <a>タグは検索しない。FAQへの案内リンク（「本人確認について」等）を
+                # 誤クリックしてFAQページに飛ぶバグを防ぐため、submitボタンのみを対象にする。
+                try:
+                    result = page.evaluate("""() => {
+                        // input[type="submit"]（ログイン以外）を最優先
+                        const s = document.querySelector('input[type="submit"]');
+                        if (s && !(s.value || '').includes('ログイン')) {
+                            s.click(); return 'submit: ' + s.value;
+                        }
+                        // button[type="submit"]
+                        for (const btn of document.querySelectorAll('button[type="submit"]')) {
+                            if (!(btn.textContent || '').includes('ログイン')) {
+                                btn.click(); return 'button: ' + btn.textContent.trim();
+                            }
+                        }
+                        // フォームをsubmit（最終手段）
+                        const f = document.querySelector('form');
+                        if (f) { f.submit(); return 'form-submit'; }
+                        return null;
+                    }""")
+                    log.info(f"  本人確認ボタン: {result}")
+                except Exception as e:
+                    log.warning(f"  本人確認ボタンクリック失敗: {e}")
+                _wait_for_page_stable(page, timeout=15)
+                log.info(f"  本人確認後URL: {page.url}")
+                # 認証ページを離れていれば完了
+                if "id.my.softbank.jp" not in page.url:
+                    log.info("  本人確認完了！認証フロー完了！")
+                    return True
+                continue
+        except Exception:
+            pass
+
+        # ── ページ情報をログ出力（デバッグ用）──
+        try:
+            info = page.evaluate("""() => {
+                const rows = [];
+                document.querySelectorAll('form').forEach((f, i) =>
+                    rows.push('form[' + i + ']: ' + f.action + ' ' + f.method));
+                document.querySelectorAll('a, input[type="submit"], button').forEach(el => {
+                    const t = (el.textContent || el.value || '').trim();
+                    if (t) rows.push(el.tagName + ': ' + t.substring(0, 40));
+                });
+                return rows.join('\\n');
+            }""")
+            log.info(f"  ページ要素:\n{info}")
+        except Exception:
+            pass
+
+        # ── パターンA: ラジオボタンがある（送付先選択） ──
+        try:
+            radios = page.locator('input[type="radio"]')
+            radio_count = radios.count()
+            if radio_count > 0:
+                log.info(f"  ラジオボタン {radio_count}個 を検出（送付先選択）")
+                selected = False
+                for i in range(radio_count):
+                    try:
+                        label = radios.nth(i).locator("..").text_content() or ""
+                        log.info(f"    ラジオ{i}: {label.strip()}")
+                        if last4 in label:
+                            radios.nth(i).check(force=True)
+                            log.info(f"    末尾{last4}に一致 → 選択")
+                            selected = True
+                            break
+                    except Exception:
+                        pass
+                if not selected:
+                    log.info("    一致なし → 先頭を選択")
+                    try:
+                        radios.first.check(force=True)
+                    except Exception:
+                        pass
+                time.sleep(1)
+        except Exception:
+            pass
+
+        # ── 「送信する」ボタンをクリック（確認ページ・ラジオ後・ラジオなし共通） ──
+        if ("セキュリティ番号" in page_text or "送付先" in page_text
+                or "連絡先" in page_text or "本人確認" in page_text):
+            result = _click_send_button(page)
+            if result:
+                log.info(f"  送信ボタンクリック: {result}")
+                _wait_for_page_stable(page, timeout=12)
+                continue
+            else:
+                log.warning("  送信ボタンが見つかりませんでした")
+
+        # ── ログインフォームにいる場合: 資格情報を入力してログインボタンをクリック ──
+        elif "id.my.softbank.jp" in current_url:
+            try:
+                pw_field = page.locator('input[type="password"]')
+                if pw_field.first.is_visible(timeout=1000):
+                    log.info("  ログインフォームを検出 → 認証情報を入力してログイン")
+                    phone_field = page.locator('input[name="telnum"]')
+                    if phone_field.first.is_visible(timeout=1000):
+                        phone_field.first.fill(phone_number)
+                    if password:
+                        pw_field.first.fill(password)
+                    page.evaluate("""() => {
+                        const s = document.querySelector('input[type="submit"]');
+                        if (s) { s.click(); return; }
+                        const f = document.querySelector('form');
+                        if (f) f.submit();
+                    }""")
+                    _wait_for_page_stable(page, timeout=15)
+                    continue
+            except Exception:
+                pass
+            log.info("  ページ遷移待ち中...")
+            time.sleep(3)
+            continue
+
+        # ループ上限に達しそうなら終了
+        if attempt >= 7:
+            break
+
+    if "id.my.softbank.jp" in page.url:
+        log.error("  まだ認証ページにいます")
+        return False
+
+    log.info("  認証フロー完了！")
+    return True
+
+
+def _is_on_auth_page(page) -> bool:
+    """現在のページが認証ページ(id.my.softbank.jp)かどうか判定する"""
+    return "id.my.softbank.jp" in page.url
+
+
+def do_login_and_navigate(page, phone_number: str, password: str) -> bool:
+    """ログイン → 2FA → PDFダウンロードページまで一気に遷移する。
+
+    戦略: PDFページ(BILL_PDF_URL)に直接アクセスし、SoftBankが自動で
+    認証ページにリダイレクトするのを利用する。認証完了後にPDFページに
+    自動リダイレクトされるため、ログインとページ遷移を一度に処理できる。
+    """
+    # ── Step 1: PDFページに直接アクセス（認証ページにリダイレクトされる） ──
+    log.info("PDFページに直接アクセス中（認証ページにリダイレクトされるはず）...")
+    page.goto(BILL_PDF_URL, wait_until="networkidle")
+    page.wait_for_load_state("networkidle")
+    time.sleep(2)
+    log.info(f"  リダイレクト先URL: {page.url}")
+
+    # 認証不要で直接PDFページに到達した場合（既存セッションがある場合）
+    if not _is_on_auth_page(page):
+        log.info("  認証なしでPDFページに到達しました")
+        return True
+
+    # ── Step 2: ログイン情報の入力 ──
+    log.info("ログイン情報を入力中...")
+
+    # ログインフォームがあるか確認
+    phone_input = (
+        page.locator('input[name="telnum"]')
+        .or_(page.locator('input.sbid-msn-check'))
+        .or_(page.locator('input[name="username"]'))
+        .or_(page.locator('input[name="msn"]'))
+        .or_(page.locator('input[name="loginId"]'))
+    )
+
+    try:
+        phone_input.first.wait_for(state="visible", timeout=10000)
+        phone_input.first.fill(phone_number)
+        log.info("  電話番号を入力しました")
+
+        pw_input = page.locator('input[type="password"]')
+        pw_input.first.wait_for(state="visible", timeout=10000)
+        pw_input.first.fill(password)
+        log.info("  パスワードを入力しました")
+
+        login_btn = (
+            page.locator('input[type="submit"]')
+            .or_(page.get_by_text("ログインする", exact=False))
+            .or_(page.get_by_role("link", name=re.compile(r"ログイン")))
+            .or_(page.get_by_role("button", name=re.compile(r"ログイン")))
+            .or_(page.locator('button[type="submit"]'))
+        )
+        _click_any_button(page, login_btn, "ログインボタン", text_hint="ログイン")
+        # ログインフォーム（電話番号入力欄）が消えるまで待つ
+        try:
+            page.wait_for_function(
+                "() => !document.querySelector('input[name=\"telnum\"]')",
+                timeout=15000,
+            )
+            log.info("  ログインフォームが消えました（認証処理完了）")
+        except Exception:
+            pass
+        try:
+            page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass
+        time.sleep(3)
+        log.info(f"  ログイン後のURL: {page.url}")
+    except (PlaywrightTimeout, Exception) as e:
+        log.error(f"  ログインフォームの操作に失敗: {e}")
+        return False
+
+    # ── Step 3: ログイン後にエラーがないか確認 ──
+    if _is_on_auth_page(page):
+        # エラーメッセージ確認
+        error_msg = page.locator(".err-area, .error, .alert-error, .sbid-error")
+        if error_msg.count() > 0:
+            try:
+                err_text = error_msg.first.text_content()
+                log.error(f"  ログインエラー: {err_text}")
+            except Exception:
+                pass
+
+        # ログインは成功したが、セキュリティ番号が必要（1回目の2FA）
+        log.info("  認証ページにいます → セキュリティ番号フローを処理します（1回目）")
+        if not _handle_security_code_flow(page, phone_number, password):
+            return False
+
+    log.info(f"  1回目の認証後のURL: {page.url}")
+
+    # ── Step 4: PDFページに到達したか確認 ──
+    # 1回目の認証後にMy SoftBankトップに飛ばされることがある
+    # その場合、書面発行ページ→PDFページへの遷移が追加の認証(acr_value=2)を要求する
+    if not _is_on_auth_page(page):
+        # combobox（月選択）があればPDFページに到達
+        try:
+            combobox = page.get_by_role("combobox").first
+            if combobox.is_visible(timeout=3000):
+                log.info("  PDFダウンロードページに到達しました！")
+                return True
+        except Exception:
+            pass
+
+        # PDFページではない場合、書面発行ページへ遷移を試みる
+        log.info("  PDFページではありません。書面発行ページへ遷移します...")
+        try:
+            # まずリンクを探す
+            cert_link = page.locator('a[href*="/wco/certificate/WCO250"]')
+            if cert_link.count() > 0:
+                cert_link.first.click()
+            else:
+                page.goto(CERTIFICATE_URL, wait_until="networkidle")
+            page.wait_for_load_state("networkidle")
+            time.sleep(2)
+            log.info(f"  書面発行ページ遷移後のURL: {page.url}")
+        except Exception:
+            pass
+
+        # 自分で印刷するページへ
+        try:
+            pdf_page_link = page.locator('a[href*="goBillInfoPdf"]')
+            if pdf_page_link.count() > 0:
+                pdf_page_link.first.click()
+            else:
+                print_link = page.get_by_text(re.compile(r"自分で印刷"))
+                if print_link.count() > 0:
+                    print_link.first.click()
+                else:
+                    page.goto(BILL_PDF_URL, wait_until="networkidle")
+            page.wait_for_load_state("networkidle")
+            time.sleep(2)
+            log.info(f"  自分で印刷ページ遷移後のURL: {page.url}")
+        except Exception:
+            pass
+
+    # ── Step 5: 2回目の認証が必要な場合 ──
+    if _is_on_auth_page(page):
+        log.info("  2回目の認証が必要です → セキュリティ番号フローを処理します")
+
+        # 2回目はログインフォームではなく直接セキュリティ番号画面のはず
+        # ただしログインフォームが出る場合もある
+        try:
+            phone_field = page.locator('input[name="telnum"]')
+            if phone_field.first.is_visible(timeout=3000):
+                log.info("  2回目の認証にもログインが必要です")
+                phone_field.first.fill(phone_number)
+                pw_field = page.locator('input[type="password"]')
+                pw_field.first.fill(password)
+                login_btn2 = page.locator('input[type="submit"]').or_(page.get_by_text("ログインする", exact=False))
+                _click_any_button(page, login_btn2, "ログインボタン(2回目)", text_hint="ログイン")
+                page.wait_for_load_state("networkidle")
+                time.sleep(3)
+        except Exception:
+            pass
+
+        # セキュリティ番号フロー（2回目）
+        if _is_on_auth_page(page):
+            if not _handle_security_code_flow(page, phone_number, password):
+                return False
+
+    # ── 最終確認 ──
+    final_url = page.url
+    log.info(f"  最終URL: {final_url}")
+
+    if _is_on_auth_page(page):
+        log.error("  認証を完了できませんでした")
+        return False
+
+    # combobox確認
+    try:
+        combobox = page.get_by_role("combobox").first
+        if combobox.is_visible(timeout=5000):
+            log.info("  PDFダウンロードページに到達しました！")
+            return True
+    except Exception:
+        pass
+
+    # PDFリンク確認
+    try:
+        pdf_link = page.locator('a[href*="doPrint"]')
+        if pdf_link.count() > 0:
+            log.info("  PDFダウンロードページに到達しました（PDFリンク検出）")
+            return True
+    except Exception:
+        pass
+
+    # WCOドメインにはいるが、PDFページではない → リンクから遷移を試みる
+    if "bl11.my.softbank.jp/wco" in final_url:
+        log.info("  WCOドメインにいますが、PDFページではありません。再遷移を試みます...")
+        try:
+            page.goto(BILL_PDF_URL, wait_until="networkidle")
+            time.sleep(2)
+            combobox = page.get_by_role("combobox").first
+            if combobox.is_visible(timeout=5000):
+                log.info("  PDFダウンロードページに到達しました！")
+                return True
+        except Exception:
+            pass
+
+    log.error(f"  PDFダウンロードページへの到達に失敗 (URL: {final_url})")
+    return False
+
+
+def select_target_month(page, year: str, month: str) -> bool:
+    """PDFページで対象月をコンボボックスから選択する。"""
+    target_value = f"{year}{month}"  # 例: "202602"
+    target_label = f"{year}年{month}月"
+    log.info(f"対象月を選択中: {target_label} (value={target_value})")
+
+    try:
+        combobox = page.get_by_role("combobox").first
+        combobox.wait_for(state="visible", timeout=10000)
+
+        # value属性で選択を試みる
+        try:
+            combobox.select_option(value=target_value)
+            log.info(f"  月を選択しました: {target_value}")
+        except Exception:
+            # ラベルで選択
+            combobox.select_option(label=re.compile(target_label))
+            log.info(f"  月をラベルで選択しました: {target_label}")
+
+        # 月選択後にページが更新される場合を待つ
+        page.wait_for_load_state("networkidle")
+        time.sleep(2)
+        return True
+    except Exception as e:
+        log.error(f"対象月の選択に失敗しました: {e}")
+        return False
+
+
+def download_pdf_from_page(page, save_dir: Path, year: str, month: str, phone: str) -> bool:
+    """PDFダウンロードページからPDFをダウンロードする。
+    一括印刷用PDF → 電話番号別PDF の優先順で試す。
+    """
+    # ── 請求金額の取得 ──
+    amount = ""
+    try:
+        amount_el = page.locator("text=/[\\d,]+円/").first
+        if amount_el.is_visible(timeout=3000):
+            raw_amount = amount_el.text_content()
+            if raw_amount:
+                amount = sanitize_amount(raw_amount)
+                log.info(f"  請求金額を取得: {amount}")
+    except Exception:
+        log.info("  請求金額の取得をスキップしました")
+
+    # ── 一括印刷用PDFを試す ──
+    log.info("一括印刷用PDFの有無を確認中...")
+    bulk_link = page.locator('a[href*="doPrintSbmAll"]')
+    if bulk_link.count() > 0 and bulk_link.first.is_visible():
+        log.info("  一括印刷用PDFが利用可能です。ダウンロード開始...")
+        try:
+            with page.expect_download(timeout=60000) as download_info:
+                bulk_link.first.click()
+            download = download_info.value
+            filename = build_filename(year, month, phone, amount)
+            dest = save_dir / filename
+            download.save_as(str(dest))
+            log.info(f"  一括印刷用PDFを保存しました: {dest}")
+            return True
+        except Exception as e:
+            log.warning(f"  一括印刷用PDFのダウンロードに失敗: {e}")
+            log.info("  電話番号別PDFにフォールバックします...")
+
+    # ── 電話番号別PDFを試す ──
+    log.info("電話番号別PDFをダウンロード中...")
+    msn_links = page.locator('a[href*="doPrintMsn"]')
+    if msn_links.count() > 0:
+        # 最初の電話番号別PDF（idx=2が通常の電話番号別）
+        for i in range(msn_links.count()):
+            link = msn_links.nth(i)
+            href = link.get_attribute("href") or ""
+            # idx=2 が電話番号別、idx=3 が機種別（機種別は不要）
+            if "idx=3" in href:
+                continue
+            try:
+                link_text = link.text_content() or ""
+                log.info(f"  PDFリンク発見: {link_text.strip()} ({href})")
+                with page.expect_download(timeout=60000) as download_info:
+                    link.click()
+                download = download_info.value
+                filename = build_filename(year, month, phone, amount)
+                dest = save_dir / filename
+                download.save_as(str(dest))
+                log.info(f"  電話番号別PDFを保存しました: {dest}")
+                return True
+            except Exception as e:
+                log.warning(f"  PDFダウンロードに失敗 (idx={i}): {e}")
+                continue
+
+    # ── フォールバック: どんなPDFリンクでも試す ──
+    log.info("PDFリンクをテキストで検索中...")
+    pdf_link = (
+        page.get_by_role("link", name=re.compile(r"PDF"))
+        .or_(page.locator('a[href*="Print"]'))
+    )
+    if pdf_link.count() > 0:
+        try:
+            with page.expect_download(timeout=60000) as download_info:
+                pdf_link.first.click()
+            download = download_info.value
+            filename = build_filename(year, month, phone, amount)
+            dest = save_dir / filename
+            download.save_as(str(dest))
+            log.info(f"  PDFを保存しました: {dest}")
+            return True
+        except Exception as e:
+            log.error(f"  PDFダウンロードに失敗: {e}")
+
+    log.error("ダウンロード可能なPDFリンクが見つかりませんでした")
+    return False
+
+
+def download_billing_pdf(
+    phone_number: str,
+    password: str,
+    year: str,
+    month: str,
+    save_dir: Path,
+) -> bool:
+    """1アカウント分のPDFダウンロード処理。
+    ログイン → 書面発行 → 自分で印刷する → 月選択 → PDFダウンロード
+    """
+    log.info(f"=== {phone_number} の処理を開始 ===")
+
+    # 既にダウンロード済みならスキップ
+    if check_already_downloaded(save_dir, year, month, phone_number):
+        return True
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=HEADLESS)
+
+        # セッションファイルがあれば読み込んで再利用（毎回SMS認証を不要にする）
+        ctx_kwargs = dict(
+            accept_downloads=True,
+            locale="ja-JP",
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        )
+        if SESSION_FILE.exists():
+            log.info(f"  保存済みセッションを読み込み: {SESSION_FILE}")
+            ctx_kwargs["storage_state"] = str(SESSION_FILE)
+        context = browser.new_context(**ctx_kwargs)
+        page = context.new_page()
+        page.set_default_timeout(30000)
+
+        success = False
+        try:
+            # ── ログイン → PDFページまで一気に遷移 ──
+            if not do_login_and_navigate(page, phone_number, password):
+                _save_debug_screenshot(
+                    page, save_dir, phone_number, year, month,
+                    "ログインまたはページ遷移失敗",
+                    f"PDFダウンロードページに到達できませんでした。最終URL: {page.url}",
+                )
+                return False
+
+            # ── セッション保存（次回以降の認証をスキップするため） ──
+            try:
+                context.storage_state(path=str(SESSION_FILE))
+                log.info(f"  セッションを保存しました: {SESSION_FILE}")
+            except Exception as e:
+                log.warning(f"  セッション保存に失敗: {e}")
+
+            # ── 対象月を選択 ──
+            if not select_target_month(page, year, month):
+                _save_debug_screenshot(
+                    page, save_dir, phone_number, year, month,
+                    "月選択失敗", f"対象月 {year}{month} の選択に失敗しました",
+                )
+                return False
+
+            # ── PDFダウンロード ──
+            success = download_pdf_from_page(page, save_dir, year, month, phone_number)
+            if not success:
+                _save_debug_screenshot(
+                    page, save_dir, phone_number, year, month,
+                    "PDFダウンロード失敗", "PDFリンクが見つからないかダウンロードに失敗しました",
+                )
+
+        except PlaywrightTimeout as e:
+            log.error(f"タイムアウトエラー: {e}")
+            _save_debug_screenshot(page, save_dir, phone_number, year, month, "タイムアウト", str(e))
+        except Exception as e:
+            log.error(f"エラーが発生しました: {e}")
+            _save_debug_screenshot(page, save_dir, phone_number, year, month, "エラー", str(e))
+        finally:
+            context.close()
+            browser.close()
+
+    return success
+
+
+def main():
+    """メイン関数"""
+    log.info("My SoftBank 料金明細PDFダウンロードを開始します")
+
+    # 対象月の決定
+    year, month = get_target_month()
+    log.info(f"対象月: {year}年{month}月")
+
+    # 保存先の決定（スプレッドシート → 環境変数の順に探す）
+    base_path = resolve_save_path()
+    save_dir = ensure_save_dir(base_path, year, month)
+    log.info(f"保存先: {save_dir}")
+
+    # アカウント情報の読み込み
+    accounts = load_accounts()
+
+    # 各アカウントについてPDFをダウンロード
+    results = []
+    for _, row in accounts.iterrows():
+        phone = str(row["phone_number"]).strip()
+        pw = str(row["password"]).strip()
+
+        ok = download_billing_pdf(phone, pw, year, month, save_dir)
+        results.append((phone, ok))
+
+    # 結果サマリー
+    log.info("=" * 50)
+    log.info("処理結果サマリー:")
+    for phone, ok in results:
+        status = "✅ 成功" if ok else "❌ 失敗"
+        log.info(f"  {phone}: {status}")
+
+    succeeded = sum(1 for _, ok in results if ok)
+    log.info(f"  合計: {succeeded}/{len(results)} 件成功")
+    log.info("=" * 50)
+
+    failed = [p for p, ok in results if not ok]
+    if failed:
+        log.warning(f"{len(failed)} 件の失敗がありました")
+        sys.exit(1)
+    else:
+        log.info("全アカウントの処理が正常に完了しました")
+
+
+if __name__ == "__main__":
+    main()

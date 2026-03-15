@@ -1,0 +1,17 @@
+# 機密情報（絶対にGitHubにアップしない）
+.env
+MySoftBank_アカウント管理スプシURL.rtf
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.python-version
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Playwright
+playwright-report/
+test-results/
