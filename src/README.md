@@ -44,6 +44,9 @@ playwright install chromium
 ## 実行方法
 
 ```bash
+# src/ フォルダ内で実行する
+cd src/
+
 # 前月分をダウンロード（通常はこれだけ）
 python3 mysoftbank_billing.py
 
