@@ -484,7 +484,7 @@ function _monthHeaderToNum_(header) {
  */
 function _ensureMonthColumn_(sheet, monthHeader) {
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  if (headers.includes(monthHeader)) return; // 既に存在
+  if (headers.some(h => String(h).trim() === monthHeader)) return; // 既に存在
 
   const targetNum = _monthHeaderToNum_(monthHeader);
   let insertAt = sheet.getLastColumn() + 1; // デフォルトは末尾
@@ -498,8 +498,10 @@ function _ensureMonthColumn_(sheet, monthHeader) {
     }
   }
 
-  // ヘッダーを緑色で設定
-  sheet.getRange(1, insertAt)
+  // ヘッダーを緑色で設定（テキスト書式固定で Date 型化を防ぐ）
+  const headerCell = sheet.getRange(1, insertAt);
+  headerCell.setNumberFormat("@");
+  headerCell
     .setValue(monthHeader)
     .setFontWeight("bold")
     .setBackground("#34A853")
@@ -515,7 +517,7 @@ function _ensureMonthColumn_(sheet, monthHeader) {
 function _getMonthColumnNum_(sheet, year, month) {
   const header = `${year}年${parseInt(month)}月`;
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  const idx = headers.indexOf(header);
+  const idx = headers.findIndex(h => String(h).trim() === header);
   return idx === -1 ? null : idx + 1;
 }
 
