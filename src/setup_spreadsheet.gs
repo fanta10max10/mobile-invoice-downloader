@@ -31,8 +31,8 @@ const PDF_TYPE_OPTIONS = [
 const SHEET_NAME = "アカウント";
 const SETTINGS_SHEET_NAME = "設定";
 
-// 月列はE列から開始（アカウント列: A=電話番号 B=パスワード C=PDFの種類 D=SMS送付先末尾4桁）
-const MONTH_COL_START = 5; // E列（1-indexed）
+// 月列はD列から開始（アカウント列: A=電話番号 B=パスワード C=PDFの種類）
+const MONTH_COL_START = 4; // D列（1-indexed）
 
 
 // ────────────────────────────────────────────────
@@ -54,7 +54,7 @@ function setupSheet() {
   }
 
   // ヘッダー行（PDF保存先フォルダは設定シートへ移動）
-  const headers = ["電話番号", "パスワード", "PDFの種類", "SMS送付先末尾4桁"];
+  const headers = ["電話番号", "パスワード", "PDFの種類"];
   const headerRange = sheet.getRange(1, 1, 1, headers.length);
   headerRange.setValues([headers]);
 
@@ -67,14 +67,13 @@ function setupSheet() {
 
   // サンプルデータ（シートが空の場合のみ書き込む。既存データは上書きしない）
   if (sheet.getLastRow() <= 1) {
-    sheet.getRange(2, 1, 1, 4).setValues([["090-XXXX-XXXX", "パスワードをここに入力", "電話番号別", ""]]);
+    sheet.getRange(2, 1, 1, 3).setValues([["090-XXXX-XXXX", "パスワードをここに入力", "電話番号別"]]);
   }
 
   // 列幅の調整
   sheet.setColumnWidth(1, 180);  // 電話番号
   sheet.setColumnWidth(2, 200);  // パスワード
   sheet.setColumnWidth(3, 220);  // PDFの種類
-  sheet.setColumnWidth(4, 160);  // SMS送付先末尾4桁
 
   // 電話番号列を書式なしテキストに（先頭0が消えないように）
   sheet.getRange("A:A").setNumberFormat("@");
@@ -100,13 +99,6 @@ function setupSheet() {
     "SoftBank ID（携帯電話番号）。ハイフンOK（スクリプトが自動で除去）\n例: 090-XXXX-XXXX"
   );
   sheet.getRange("B1").setNote("My SoftBankのログインパスワード");
-  sheet.getRange("D1").setNote(
-    "SMS送付先電話番号の末尾4桁（任意）\n\n" +
-    "ファミリープランなど、ログインする電話番号と\n" +
-    "SMS送付先が異なる場合に設定する。\n\n" +
-    "例: SMS送付先が 090-1234-5678 なら「5678」\n" +
-    "空欄の場合は電話番号の末尾4桁で自動判定"
-  );
   sheet.getRange("C1").setNote(
     "ダウンロードするPDFの種類（カンマ区切りで複数指定可）\n\n" +
     "電話番号別 … 電話番号別PDF（デフォルト）\n" +
