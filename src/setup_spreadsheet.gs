@@ -228,74 +228,6 @@ function _upsertSettingRow_(sheet, key, defaultValue, noteText) {
 
 
 // ────────────────────────────────────────────────
-//  移行ヘルパー（既存シート用）
-// ────────────────────────────────────────────────
-
-/**
- * 既存シートに「PDFの種類」列を追加する（既にsetupSheet済みのシート用）
- */
-function addPdfTypeColumn() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(SHEET_NAME);
-  if (!sheet) {
-    SpreadsheetApp.getUi().alert("エラー", `「${SHEET_NAME}」シートが見つかりません。`, SpreadsheetApp.getUi().ButtonSet.OK);
-    return;
-  }
-
-  // ヘッダー行を確認して「PDFの種類」列が既にあるか確認
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  if (headers.includes("PDFの種類")) {
-    SpreadsheetApp.getUi().alert("情報", "「PDFの種類」列は既に存在します。", SpreadsheetApp.getUi().ButtonSet.OK);
-    return;
-  }
-
-  // 最終列の次に追加
-  const newCol = sheet.getLastColumn() + 1;
-  sheet.getRange(1, newCol).setValue("PDFの種類")
-    .setFontWeight("bold")
-    .setBackground("#4285F4")
-    .setFontColor("#FFFFFF")
-    .setHorizontalAlignment("center");
-  sheet.setColumnWidth(newCol, 220);
-
-  // 既存データ行にデフォルト値「電話番号別」を設定
-  const lastRow = sheet.getLastRow();
-  if (lastRow >= 2) {
-    sheet.getRange(2, newCol, lastRow - 1, 1).setValue("電話番号別");
-  }
-
-  // ドロップダウンを設定
-  const pdfTypeRange = sheet.getRange(2, newCol, Math.max(lastRow - 1, 99), 1);
-  const rule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(PDF_TYPE_OPTIONS, true)
-    .setAllowInvalid(true)
-    .setHelpText(
-      "ダウンロードするPDFの種類を選択してください。\n" +
-      "複数選択する場合はカンマ区切りで直接入力（例: 電話番号別,一括）\n\n" +
-      "電話番号別 … 電話番号別PDF\n" +
-      "一括       … 一括印刷用PDF\n" +
-      "機種別     … 機種別PDF"
-    )
-    .build();
-  pdfTypeRange.setDataValidation(rule);
-
-  sheet.getRange(1, newCol).setNote(
-    "ダウンロードするPDFの種類（カンマ区切りで複数指定可）\n\n" +
-    "電話番号別 … 電話番号別PDF（デフォルト）\n" +
-    "一括       … 一括印刷用PDF\n" +
-    "機種別     … 機種別PDF\n\n" +
-    "例: 電話番号別,一括 → 電話番号別と一括の両方をDL"
-  );
-
-  SpreadsheetApp.getUi().alert(
-    "完了",
-    "「PDFの種類」列を追加しました。\n既存行にはデフォルト値「電話番号別」を設定済みです。",
-    SpreadsheetApp.getUi().ButtonSet.OK
-  );
-}
-
-
-// ────────────────────────────────────────────────
 //  PDFリンク更新
 // ────────────────────────────────────────────────
 
@@ -656,11 +588,10 @@ function _extractAmountFromPdf_(file) {
     const text = doc.getBody().getText();
 
     // SoftBankの請求金額を抽出するパターン（複数パターンを優先順で試す）
+    // 「計」= 個別電話番号ごとの小計（税抜き）。「ご請求金額」は複数回線合算のため使わない
     const patterns = [
-      /ご請求金額[^\d]*([\d,]+)/,
-      /請求金額[^\d]*([\d,]+)/,
-      /ご請求合計[^\d]*([\d,]+)/,
-      /合計金額[^\d]*([\d,]+)/,
+      /(?<![小合])計[^\d]*([\d,]+)/,  // 電話番号別の小計（「小計」「合計」は除外）
+      /小計[^\d]*([\d,]+)/,           // 小計（フォールバック）
     ];
     for (const pattern of patterns) {
       const m = text.match(pattern);
@@ -693,8 +624,6 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("MySoftBank ツール")
     .addItem("初期セットアップ", "setupSheet")
-    .addSeparator()
-    .addItem("「PDFの種類」列を追加（既存シート用）", "addPdfTypeColumn")
     .addSeparator()
     .addItem("PDFリンクを更新", "updatePdfLinks")
     .addSeparator()
