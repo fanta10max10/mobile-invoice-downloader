@@ -207,18 +207,18 @@ def resolve_save_path() -> str:
 
 
 def parse_pdf_types(raw: str) -> set[str]:
-    """pdf_type列の値をパースしてセットで返す。
-    例: "phone,bulk" → {"phone", "bulk"}
-    未指定・不正値の場合はデフォルト {"phone"} を返す。
+    """PDFの種類列の値をパースしてセットで返す。
+    例: "電話番号別,一括" → {"電話番号別", "一括"}
+    未指定・不正値の場合はデフォルト {"電話番号別"} を返す。
     """
-    valid = {"phone", "bulk", "device"}
+    valid = {"電話番号別", "一括", "機種別"}
     if not raw or str(raw).strip().lower() in ("nan", ""):
-        return {"phone"}
-    types = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
+        return {"電話番号別"}
+    types = {t.strip() for t in str(raw).split(",") if t.strip()}
     result = types & valid
     if not result:
-        log.warning(f"  pdf_type '{raw}' に有効な値がありません。デフォルト 'phone' を使用します。")
-        return {"phone"}
+        log.warning(f"  PDFの種類 '{raw}' に有効な値がありません。デフォルト '電話番号別' を使用します。")
+        return {"電話番号別"}
     return result
 
 
@@ -229,17 +229,17 @@ def load_accounts() -> pd.DataFrame:
     df = pd.read_csv(csv_url)
     # ヘッダー正規化 (前後の空白除去)
     df.columns = df.columns.str.strip()
-    required = {"phone_number", "password"}
+    required = {"電話番号", "パスワード"}
     missing = required - set(df.columns)
     if missing:
         log.error(f"スプレッドシートに必要なカラムがありません: {missing}")
         log.error(f"現在のカラム: {list(df.columns)}")
         sys.exit(1)
     # 電話番号のハイフンを除去
-    df["phone_number"] = df["phone_number"].astype(str).apply(strip_hyphens)
-    # pdf_type列がなければデフォルト値を補完
-    if "pdf_type" not in df.columns:
-        df["pdf_type"] = "phone"
+    df["電話番号"] = df["電話番号"].astype(str).apply(strip_hyphens)
+    # PDFの種類列がなければデフォルト値を補完
+    if "PDFの種類" not in df.columns:
+        df["PDFの種類"] = "電話番号別"
     log.info(f"  {len(df)} 件のアカウントを読み込みました")
     return df
 
@@ -325,12 +325,12 @@ def _save_debug_screenshot(
     error_type: str, error_detail: str,
 ) -> None:
     """デバッグ用スクリーンショットを {base_path}/debug/ に保存する。
-    base_path は save_dir の2階層上（save_dir = base_path/YYYY/MM）。
+    base_path は save_dir の3階層上（save_dir = base_path/YYYY/MM/SoftBank）。
     ファイル名にエラー種別を含め、詳細をテキストファイルにも記録する。
     """
     try:
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_path = save_dir.parent.parent  # base_path/YYYY/MM → base_path
+        base_path = save_dir.parent.parent.parent  # base_path/YYYY/MM/SoftBank → base_path
         debug_dir = base_path / "debug" / f"debug_{now}"
         debug_dir.mkdir(parents=True, exist_ok=True)
 
@@ -361,9 +361,12 @@ def _save_debug_screenshot(
         pass
 
 
+CARRIER_NAME = "SoftBank"
+
+
 def ensure_save_dir(base_path: str, year: str, month: str) -> Path:
-    """保存先ディレクトリを作成して返す (base_path/year/month)"""
-    save_dir = Path(base_path) / year / month
+    """保存先ディレクトリを作成して返す (base_path/year/month/キャリア名)"""
+    save_dir = Path(base_path) / year / month / CARRIER_NAME
     save_dir.mkdir(parents=True, exist_ok=True)
     return save_dir
 
@@ -930,14 +933,14 @@ def download_pdf_from_page(
 ) -> bool:
     """PDFダウンロードページから指定種別のPDFをダウンロードする。
 
-    pdf_types: {"phone", "bulk", "device"} の部分集合。
-      phone  … 電話番号別PDF (doPrintMsn idx=2)
-      bulk   … 一括印刷用PDF (doPrintSbmAll)
-      device … 機種別PDF    (doPrintMsn idx=3)
-    未指定時はデフォルト {"phone"}。
+    pdf_types: {"電話番号別", "一括", "機種別"} の部分集合。
+      電話番号別 … 電話番号別PDF (doPrintMsn idx=2)
+      一括       … 一括印刷用PDF (doPrintSbmAll)
+      機種別     … 機種別PDF    (doPrintMsn idx=3)
+    未指定時はデフォルト {"電話番号別"}。
     """
     if pdf_types is None:
-        pdf_types = {"phone"}
+        pdf_types = {"電話番号別"}
 
     log.info(f"ダウンロード対象: {', '.join(sorted(pdf_types))}")
 
@@ -955,28 +958,28 @@ def download_pdf_from_page(
 
     any_success = False
 
-    # ── 一括印刷用PDF (bulk) ──
-    if "bulk" in pdf_types:
+    # ── 一括印刷用PDF ──
+    if "一括" in pdf_types:
         log.info("一括印刷用PDFを確認中...")
         bulk_link = page.locator('a[href*="doPrintSbmAll"]')
         if bulk_link.count() > 0 and bulk_link.first.is_visible():
-            if _download_single_pdf(page, bulk_link.first, "bulk", save_dir, year, month, phone, amount):
+            if _download_single_pdf(page, bulk_link.first, "一括", save_dir, year, month, phone, amount):
                 any_success = True
         else:
             log.info("  一括印刷用PDFリンクが見つかりませんでした")
 
-    # ── 電話番号別PDF (phone) / 機種別PDF (device) ──
-    if "phone" in pdf_types or "device" in pdf_types:
+    # ── 電話番号別PDF / 機種別PDF ──
+    if "電話番号別" in pdf_types or "機種別" in pdf_types:
         msn_links = page.locator('a[href*="doPrintMsn"]')
         if msn_links.count() > 0:
             for i in range(msn_links.count()):
                 link = msn_links.nth(i)
                 href = link.get_attribute("href") or ""
-                if "idx=2" in href and "phone" in pdf_types:
-                    if _download_single_pdf(page, link, "phone", save_dir, year, month, phone, amount):
+                if "idx=2" in href and "電話番号別" in pdf_types:
+                    if _download_single_pdf(page, link, "電話番号別", save_dir, year, month, phone, amount):
                         any_success = True
-                elif "idx=3" in href and "device" in pdf_types:
-                    if _download_single_pdf(page, link, "device", save_dir, year, month, phone, amount):
+                elif "idx=3" in href and "機種別" in pdf_types:
+                    if _download_single_pdf(page, link, "機種別", save_dir, year, month, phone, amount):
                         any_success = True
         else:
             log.info("  電話番号別/機種別PDFリンクが見つかりませんでした")
@@ -998,8 +1001,8 @@ def download_billing_pdf(
     ログイン → 書面発行 → 自分で印刷する → 月選択 → PDFダウンロード
     """
     if pdf_types is None:
-        pdf_types = {"phone"}
-    log.info(f"=== {phone_number} の処理を開始 (pdf_type: {', '.join(sorted(pdf_types))}) ===")
+        pdf_types = {"電話番号別"}
+    log.info(f"=== {phone_number} の処理を開始 (PDFの種類: {', '.join(sorted(pdf_types))}) ===")
 
     # 既にダウンロード済みならスキップ
     if check_already_downloaded(save_dir, year, month, phone_number):
@@ -1091,9 +1094,9 @@ def main():
     # 各アカウントについてPDFをダウンロード
     results = []
     for _, row in accounts.iterrows():
-        phone = str(row["phone_number"]).strip()
-        pw = str(row["password"]).strip()
-        pdf_types = parse_pdf_types(row.get("pdf_type", "phone"))
+        phone = str(row["電話番号"]).strip()
+        pw = str(row["パスワード"]).strip()
+        pdf_types = parse_pdf_types(row.get("PDFの種類", "電話番号別"))
 
         ok = download_billing_pdf(phone, pw, year, month, save_dir, pdf_types)
         results.append((phone, ok))
