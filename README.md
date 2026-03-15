@@ -21,7 +21,7 @@ playwright install chromium
 
 | phone_number | password | PDF保存先 |
 |---|---|---|
-| 090-4846-9405 | パスワード | https://drive.google.com/drive/folders/XXXXXXXX |
+| 090-XXXX-XXXX | パスワード | https://drive.google.com/drive/folders/XXXXXXXX |
 
 - `phone_number`: SoftBank IDの携帯電話番号（ハイフンあり/なしどちらでもOK）
 - `password`: My SoftBankのパスワード
