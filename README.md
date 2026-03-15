@@ -21,17 +21,18 @@ playwright install chromium
 
 | phone_number | password | PDF保存先 |
 |---|---|---|
-| 090-4846-9405 | パスワード | /Users/yamamoto/.../確定申告系/携帯領収書管理 |
+| 090-4846-9405 | パスワード | https://drive.google.com/drive/folders/XXXXXXXX |
 
 - `phone_number`: SoftBank IDの携帯電話番号（ハイフンあり/なしどちらでもOK）
 - `password`: My SoftBankのパスワード
-- `PDF保存先`: ローカルのフォルダパス（Googleドライブのローカル同期フォルダなど）
+- `PDF保存先`: Google DriveのフォルダURL（`https://drive.google.com/drive/folders/...` 形式）
+  - ローカルの絶対パス（`/Users/...`）でも可
 
 その後、スプレッドシートの **ファイル → 共有 → ウェブに公開 → カンマ区切り形式（.csv）** で公開し、URLを `MySoftBank_アカウント管理スプシURL.rtf` に貼り付けて保存しておく。
 
-### 3. 保存先フォルダIDのマッピング（PDF保存先がGoogle DriveのURLの場合のみ）
+### 3. 保存先フォルダIDのマッピング
 
-スプレッドシートのPDF保存先列にGoogle DriveのフォルダURLを書いた場合、`drive_path_map.txt` にフォルダIDとローカルパスの対応を書く：
+`PDF保存先` にGoogle DriveのフォルダURLを書いている場合（現在の運用）、`drive_path_map.txt` にフォルダID（URLの `folders/` 以降の文字列）とMac上のローカルパスの対応を書く：
 
 ```
 フォルダID=ローカルパス
@@ -78,12 +79,13 @@ echo '123' > /tmp/softbank_security_code.txt
 ```
 softbank-invoice-downloader/
 ├── mysoftbank_billing.py              # メインスクリプト
-├── MySoftBank_アカウント管理スプシURL.rtf  # スプレッドシートのCSV URL（機密）
+├── MySoftBank_アカウント管理スプシURL.rtf  # スプレッドシートのCSV URL（機密・gitignore対象）
 ├── drive_path_map.txt                 # Google DriveフォルダID → ローカルパス対応
 ├── requirements.txt                   # Python依存ライブラリ
 ├── setup_spreadsheet.gs               # スプレッドシート初期設定用Google Apps Script
 ├── env.example                        # 環境変数サンプル
-├── .env                               # 環境変数（gitignore推奨）
+├── .env                               # 環境変数（機密・gitignore対象）
+├── .gitignore                         # GitHub非公開ファイルの除外設定
 ├── README.md                          # このファイル
 └── 仕様書.md                           # 技術仕様書
 ```
