@@ -77,20 +77,18 @@ def read_urls_from_rtf() -> list[str]:
 
 
 def resolve_csv_url() -> str:
-    """スプレッドシートのCSV URLを取得する。
+    """アカウントシートのCSV URLを取得する。
     1. 環境変数 SPREADSHEET_CSV_URL
-    2. 同ディレクトリの MySoftBank_アカウント管理スプシURL.rtf
+    2. RTFファイルの1番目のURL
     の順に探す。
     """
-    # 環境変数から
     url = SPREADSHEET_CSV_URL
     if url:
         return url.strip()
 
-    # RTFファイルから（最初のURLをaccounts用として使う）
     urls = read_urls_from_rtf()
     if urls:
-        log.info("RTFファイルからCSV URLを取得しました")
+        log.info("RTFファイルからアカウントCSV URLを取得しました")
         return urls[0]
 
     log.error(
@@ -99,6 +97,24 @@ def resolve_csv_url() -> str:
         "  同ディレクトリに MySoftBank_アカウント管理スプシURL.rtf を配置してください。"
     )
     sys.exit(1)
+
+
+def resolve_settings_csv_url() -> str | None:
+    """設定シートのCSV URLを取得する。
+    1. 環境変数 SETTINGS_CSV_URL
+    2. RTFファイルの2番目のURL
+    の順に探す。見つからなければ None を返す。
+    """
+    url = os.environ.get("SETTINGS_CSV_URL")
+    if url:
+        return url.strip()
+
+    urls = read_urls_from_rtf()
+    if len(urls) >= 2:
+        log.info("RTFファイルから設定CSV URLを取得しました")
+        return urls[1]
+
+    return None
 
 
 def find_gdrive_local_root() -> Path | None:
@@ -162,48 +178,74 @@ def drive_url_to_local_path(url: str) -> str | None:
 def resolve_save_path() -> str:
     """PDF保存先パスを取得する。
     優先順:
-      1. スプレッドシートの「PDF保存先」列（最初の非空値）
-         - ローカルパス（/で始まる）: そのまま使用
+      1. 設定シートCSVの「PDF保存先フォルダ」行
          - Google DriveのURL: マッピングファイル参照→ローカルパスに変換
-      2. 環境変数 BASE_SAVE_PATH
+         - ローカルパス（/で始まる）: そのまま使用
+      2. アカウントシートCSVの旧「PDF保存先」列（後方互換）
+      3. 環境変数 BASE_SAVE_PATH
     """
-    csv_url = resolve_csv_url()
+    # ── 1. 設定シートから取得 ──
+    settings_url = resolve_settings_csv_url()
+    if settings_url:
+        try:
+            df = pd.read_csv(settings_url)
+            df.columns = df.columns.str.strip()
+            if "設定名" in df.columns and "値" in df.columns:
+                mask = df["設定名"].astype(str).str.strip() == "PDF保存先フォルダ"
+                if mask.any():
+                    save_path = str(df.loc[mask, "値"].iloc[0]).strip()
+                    if save_path and save_path.lower() != "nan":
+                        result = _parse_save_path(save_path, source="設定シート")
+                        if result:
+                            return result
+        except Exception as e:
+            log.warning(f"設定シートからの保存先取得に失敗: {e}")
+
+    # ── 2. アカウントシートの旧列から取得（後方互換） ──
     try:
+        csv_url = resolve_csv_url()
         df = pd.read_csv(csv_url)
         df.columns = df.columns.str.strip()
-        if "PDF保存先" in df.columns:
-            paths = df["PDF保存先"].dropna().astype(str).str.strip()
+        col = next((c for c in ("PDF保存先フォルダ", "PDF保存先") if c in df.columns), None)
+        if col:
+            paths = df[col].dropna().astype(str).str.strip()
             paths = paths[paths != ""]
             if len(paths) > 0:
-                save_path = paths.iloc[0]
-
-                # Google DriveのURLが入っている場合、ローカルパスに変換
-                if save_path.startswith("https://"):
-                    local = drive_url_to_local_path(save_path)
-                    if local:
-                        return local
-                    log.warning(
-                        f"Google DriveのURLからローカルパスを自動変換できませんでした。\n"
-                        f"  URL: {save_path}"
-                    )
-                    # フォールバック: 環境変数を試す前に終わらない
-                elif Path(save_path).is_absolute():
-                    log.info(f"スプレッドシートから保存先を取得: {save_path}")
-                    return save_path
+                result = _parse_save_path(paths.iloc[0], source="アカウントシート")
+                if result:
+                    return result
     except Exception as e:
-        log.warning(f"スプレッドシートからの保存先取得に失敗: {e}")
+        log.warning(f"アカウントシートからの保存先取得に失敗: {e}")
 
+    # ── 3. 環境変数 ──
     if BASE_SAVE_PATH:
         return BASE_SAVE_PATH
 
     log.error(
         "PDF保存先が設定されていません。以下のいずれかを設定してください:\n"
-        "  1. スプレッドシートの「PDF保存先」列にMac上のフォルダパスを記入\n"
+        "  1. スプレッドシートの「設定」シートの「PDF保存先フォルダ」にMac上のフォルダパスを記入\n"
         "     例: /Users/yamamoto/Library/CloudStorage/GoogleDrive-.../マイドライブ/確定申告系/2026/SoftBank請求書\n"
         "  2. 同ディレクトリに drive_path_map.txt を作成（フォルダID=ローカルパス）\n"
         "  3. 環境変数 BASE_SAVE_PATH を設定"
     )
     sys.exit(1)
+
+
+def _parse_save_path(save_path: str, source: str) -> str | None:
+    """保存先パス文字列を解釈してローカルパスを返す。解決できなければ None。"""
+    if save_path.startswith("https://"):
+        local = drive_url_to_local_path(save_path)
+        if local:
+            return local
+        log.warning(
+            f"Google DriveのURLからローカルパスを自動変換できませんでした（{source}）\n"
+            f"  URL: {save_path}"
+        )
+        return None
+    elif Path(save_path).is_absolute():
+        log.info(f"保存先を取得（{source}）: {save_path}")
+        return save_path
+    return None
 
 
 def parse_pdf_types(raw: str) -> set[str]:

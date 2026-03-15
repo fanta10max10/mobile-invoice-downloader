@@ -6,8 +6,9 @@
  *   2. 拡張機能 → Apps Script を開く
  *   3. このコードを貼り付けて保存
  *   4. setupSheet() を実行（初回は権限承認が必要）
- *   5. シートにアカウント情報を入力
- *   6. publishAsCsv() を実行して「ウェブに公開」の手順を表示
+ *   5. 「設定」シートにPDF保存先フォルダURLを入力
+ *   6. 「アカウント」シートにアカウント情報を入力
+ *   7. publishAsCsv() を実行して「ウェブに公開」の手順を確認
  *
  * PDFの種類 の値:
  *   電話番号別              ... 電話番号別PDF（デフォルト）
@@ -29,22 +30,32 @@ const PDF_TYPE_OPTIONS = [
 ];
 
 const SHEET_NAME = "アカウント";
+const SETTINGS_SHEET_NAME = "設定";
+
+// 月列はD列から開始（アカウント列: A=電話番号 B=パスワード C=PDFの種類）
+const MONTH_COL_START = 4; // D列（1-indexed）
+
+
+// ────────────────────────────────────────────────
+//  初期セットアップ
+// ────────────────────────────────────────────────
 
 /**
  * スプレッドシートの初期セットアップ
+ * アカウントシートと設定シートを両方作成する
  */
 function setupSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // シート名を設定
+  // ── アカウントシートを作成 ──
   let sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) {
     sheet = ss.getActiveSheet();
     sheet.setName(SHEET_NAME);
   }
 
-  // ヘッダー行
-  const headers = ["電話番号", "パスワード", "PDF保存先フォルダ", "PDFの種類"];
+  // ヘッダー行（PDF保存先フォルダは設定シートへ移動）
+  const headers = ["電話番号", "パスワード", "PDFの種類"];
   const headerRange = sheet.getRange(1, 1, 1, headers.length);
   headerRange.setValues([headers]);
 
@@ -56,28 +67,19 @@ function setupSheet() {
     .setHorizontalAlignment("center");
 
   // サンプルデータ
-  const sample = [
-    [
-      "090-XXXX-XXXX",
-      "パスワードをここに入力",
-      "https://drive.google.com/drive/folders/XXXXXXXX",
-      "電話番号別",
-    ],
-  ];
-  sheet.getRange(2, 1, sample.length, sample[0].length).setValues(sample);
+  sheet.getRange(2, 1, 1, 3).setValues([["090-XXXX-XXXX", "パスワードをここに入力", "電話番号別"]]);
 
   // 列幅の調整
   sheet.setColumnWidth(1, 180);  // 電話番号
   sheet.setColumnWidth(2, 200);  // パスワード
-  sheet.setColumnWidth(3, 450);  // PDF保存先フォルダ
-  sheet.setColumnWidth(4, 220);  // PDFの種類
+  sheet.setColumnWidth(3, 220);  // PDFの種類
 
   // 電話番号列を書式なしテキストに（先頭0が消えないように）
   sheet.getRange("A:A").setNumberFormat("@");
 
   // PDFの種類列にドロップダウンを設定（2行目以降）
   const lastRow = Math.max(sheet.getLastRow(), 100);
-  const pdfTypeRange = sheet.getRange(2, 4, lastRow - 1, 1);
+  const pdfTypeRange = sheet.getRange(2, 3, lastRow - 1, 1);
   const rule = SpreadsheetApp.newDataValidation()
     .requireValueInList(PDF_TYPE_OPTIONS, true)
     .setAllowInvalid(true)  // カンマ区切り直接入力も許可
@@ -97,13 +99,6 @@ function setupSheet() {
   );
   sheet.getRange("B1").setNote("My SoftBankのログインパスワード");
   sheet.getRange("C1").setNote(
-    "PDFの保存先。以下どちらでも可:\n" +
-    "・Google DriveのフォルダURL（https://drive.google.com/drive/folders/...）\n" +
-    "  → drive_path_map.txt でローカルパスに変換される\n" +
-    "・Macのローカル絶対パス（/Users/...）\n\n" +
-    "1行目に書けば全アカウント共通。2行目以降は空欄でOK。"
-  );
-  sheet.getRange("D1").setNote(
     "ダウンロードするPDFの種類（カンマ区切りで複数指定可）\n\n" +
     "電話番号別 … 電話番号別PDF（デフォルト）\n" +
     "一括       … 一括印刷用PDF\n" +
@@ -111,10 +106,14 @@ function setupSheet() {
     "例: 電話番号別,一括 → 電話番号別と一括の両方をDL"
   );
 
-  // 不要なシートを削除
+  // ── 設定シートを作成 ──
+  setupSettingsSheet_(ss);
+
+  // ── 不要なシートを削除（アカウントと設定は保持） ──
   const sheets = ss.getSheets();
+  const keepNames = new Set([SHEET_NAME, SETTINGS_SHEET_NAME]);
   for (const s of sheets) {
-    if (s.getName() !== SHEET_NAME && sheets.length > 1) {
+    if (!keepNames.has(s.getName()) && sheets.length > keepNames.size) {
       ss.deleteSheet(s);
     }
   }
@@ -124,14 +123,60 @@ function setupSheet() {
 
   SpreadsheetApp.getUi().alert(
     "セットアップ完了",
-    `シート「${SHEET_NAME}」を作成しました。\n\n` +
-    "1. サンプル行を実際のアカウント情報に書き換えてください\n" +
-    "2. 「PDFの種類」列でダウンロードするPDFの種類を選択してください（デフォルト: 電話番号別）\n" +
-    "3. 完了後、publishAsCsv() を実行してCSV URLを取得してください",
+    "シートを作成しました。\n\n" +
+    "【設定シート】\n" +
+    "  「PDF保存先フォルダ」にGoogle DriveのフォルダURLを入力してください\n\n" +
+    "【アカウントシート】\n" +
+    "  サンプル行を実際のアカウント情報に書き換えてください\n\n" +
+    "完了後、publishAsCsv() を実行してCSV URLを取得してください",
     SpreadsheetApp.getUi().ButtonSet.OK
   );
 }
 
+
+/**
+ * 設定シートを作成・初期化する（内部用）
+ */
+function setupSettingsSheet_(ss) {
+  let sheet = ss.getSheetByName(SETTINGS_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(SETTINGS_SHEET_NAME);
+  }
+
+  // ヘッダー行
+  const headers = ["設定名", "値"];
+  const headerRange = sheet.getRange(1, 1, 1, 2);
+  headerRange.setValues([headers]);
+  headerRange
+    .setFontWeight("bold")
+    .setBackground("#FF6D00")
+    .setFontColor("#FFFFFF")
+    .setHorizontalAlignment("center");
+
+  // 設定項目
+  const settings = [
+    ["PDF保存先フォルダ", "https://drive.google.com/drive/folders/XXXXXXXX"],
+  ];
+  sheet.getRange(2, 1, settings.length, 2).setValues(settings);
+
+  // 列幅
+  sheet.setColumnWidth(1, 200);  // 設定名
+  sheet.setColumnWidth(2, 500);  // 値
+
+  // 注釈
+  sheet.getRange("B2").setNote(
+    "PDFの保存先フォルダ。以下どちらでも可:\n" +
+    "・Google DriveのフォルダURL（https://drive.google.com/drive/folders/...）\n" +
+    "  → drive_path_map.txt でローカルパスに変換される\n" +
+    "・Macのローカル絶対パス（/Users/...）"
+  );
+  sheet.getRange("A2").setNote("全アカウント共通のPDF保存先フォルダです");
+}
+
+
+// ────────────────────────────────────────────────
+//  移行ヘルパー（既存シート用）
+// ────────────────────────────────────────────────
 
 /**
  * 既存シートに「PDFの種類」列を追加する（既にsetupSheet済みのシート用）
@@ -197,57 +242,80 @@ function addPdfTypeColumn() {
 }
 
 
+// ────────────────────────────────────────────────
+//  CSV URL 取得手順
+// ────────────────────────────────────────────────
+
 /**
  * 「ウェブに公開」の手順をダイアログで表示する
  * ※ GASからプログラムで「ウェブに公開」はできないため、手順を案内する
+ *
+ * アカウントシートと設定シートの2つのCSV URLが必要
  */
 function publishAsCsv() {
-  const expectedUrl =
-    `https://docs.google.com/spreadsheets/d/e/2PACX-***/pub?gid=0&single=true&output=csv`;
-
   const html = HtmlService.createHtmlOutput(`
     <style>
       body { font-family: sans-serif; font-size: 14px; padding: 12px; }
-      h3 { margin-top: 0; }
+      h3 { margin-top: 0; color: #1a73e8; }
+      h4 { margin: 16px 0 6px; }
       ol li { margin-bottom: 8px; }
       code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
       .warn { color: #d93025; font-weight: bold; }
-      .url-box { background: #f0f0f0; padding: 8px; border-radius: 4px;
-                 word-break: break-all; font-family: monospace; font-size: 12px; }
+      .section { border: 1px solid #ddd; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px; }
+      .section-label { display: inline-block; padding: 2px 8px; border-radius: 3px; color: #fff;
+                       font-size: 12px; font-weight: bold; margin-bottom: 8px; }
+      .accounts { background: #4285F4; }
+      .settings { background: #FF6D00; }
     </style>
     <h3>CSV URLの取得手順</h3>
-    <ol>
-      <li>このスプレッドシートのメニュー →<br>
-          <b>ファイル → 共有 → ウェブに公開</b></li>
-      <li>公開対象を <b>「アカウント」シート</b> に変更</li>
-      <li>形式を <b>「カンマ区切り形式（.csv）」</b> に変更</li>
-      <li><b>「公開」</b> ボタンをクリック</li>
-      <li>表示されたURLをコピーして <code>MySoftBank_アカウント管理スプシURL.rtf</code> に貼り付ける</li>
-    </ol>
-    <p>URL形式の例:</p>
-    <div class="url-box">${expectedUrl}</div>
-    <br>
+    <p>以下の2シートそれぞれのCSV URLを取得してください。</p>
+
+    <div class="section">
+      <div class="section-label accounts">① アカウントシート</div>
+      <ol>
+        <li>メニュー → <b>ファイル → 共有 → ウェブに公開</b></li>
+        <li>公開対象を <b>「アカウント」シート</b> に変更</li>
+        <li>形式を <b>「カンマ区切り形式（.csv）」</b> に変更</li>
+        <li><b>「公開」</b> ボタンをクリック → URLをコピー</li>
+        <li>コピーしたURLを <code>MySoftBank_アカウント管理スプシURL.rtf</code> の<b>1行目</b>に貼り付ける</li>
+      </ol>
+    </div>
+
+    <div class="section">
+      <div class="section-label settings">② 設定シート</div>
+      <ol>
+        <li>同じダイアログで公開対象を <b>「設定」シート</b> に変更</li>
+        <li>形式を <b>「カンマ区切り形式（.csv）」</b> に変更</li>
+        <li><b>「公開」</b> ボタンをクリック → URLをコピー</li>
+        <li>コピーしたURLを <code>MySoftBank_アカウント管理スプシURL.rtf</code> の<b>2行目</b>に貼り付ける</li>
+      </ol>
+    </div>
+
     <p class="warn">
       ⚠ このURLを知っている人は誰でもアクセスできます。<br>
       パスワードを含むため、URLの共有は厳禁です。<br>
       不要になったら「ウェブに公開」を必ず停止してください。
     </p>
   `)
-    .setWidth(520)
-    .setHeight(440);
+    .setWidth(560)
+    .setHeight(500);
 
   SpreadsheetApp.getUi().showModalDialog(html, "CSV URLの取得手順");
 }
 
 
+// ────────────────────────────────────────────────
+//  PDFリンク更新
+// ────────────────────────────────────────────────
+
 /**
  * Google Drive を探索してPDFリンクをスプレッドシートに設定する
  *
  * 探索するフォルダ構造:
- *   {PDF保存先フォルダ}/YYYY/MM/SoftBank/*.pdf  ← 新形式
- *   {PDF保存先フォルダ}/YYYY/MM/*.pdf           ← 旧形式（後方互換）
+ *   {設定シートのPDF保存先}/YYYY/MM/SoftBank/*.pdf  ← 新形式
+ *   {設定シートのPDF保存先}/YYYY/MM/*.pdf           ← 旧形式（後方互換）
  *
- * 見つかったPDFはE列以降の月列（例: 2026年2月）にハイパーリンクとして記録される。
+ * 見つかったPDFはD列以降の月列（例: 2026年2月）にハイパーリンクとして記録される。
  * 月列は日付昇順（左が古い）に自動整列される。
  */
 function updatePdfLinks() {
@@ -258,26 +326,15 @@ function updatePdfLinks() {
     return;
   }
 
-  const data = sheet.getDataRange().getValues();
-  const headers = data[0];
-  const phoneColIdx = headers.indexOf("電話番号");
-  const folderColIdx = headers.indexOf("PDF保存先フォルダ");
-  if (phoneColIdx === -1 || folderColIdx === -1) {
-    SpreadsheetApp.getUi().alert("エラー", "「電話番号」または「PDF保存先フォルダ」列が見つかりません。", SpreadsheetApp.getUi().ButtonSet.OK);
-    return;
-  }
-
-  // ルートフォルダURLを取得（最初の非空URL）
-  let rootFolderUrl = "";
-  for (let i = 1; i < data.length; i++) {
-    const val = String(data[i][folderColIdx] || "").trim();
-    if (val.startsWith("https://drive.google.com/")) {
-      rootFolderUrl = val;
-      break;
-    }
-  }
-  if (!rootFolderUrl) {
-    SpreadsheetApp.getUi().alert("エラー", "「PDF保存先フォルダ」にGoogle DriveのフォルダURLが設定されていません。\n例: https://drive.google.com/drive/folders/XXXX", SpreadsheetApp.getUi().ButtonSet.OK);
+  // 設定シートからPDF保存先フォルダURLを取得
+  const rootFolderUrl = _getSettingValue_("PDF保存先フォルダ");
+  if (!rootFolderUrl || !rootFolderUrl.startsWith("https://drive.google.com/")) {
+    SpreadsheetApp.getUi().alert(
+      "エラー",
+      "「設定」シートの「PDF保存先フォルダ」にGoogle DriveのフォルダURLが設定されていません。\n" +
+      "例: https://drive.google.com/drive/folders/XXXX",
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
     return;
   }
 
@@ -296,6 +353,13 @@ function updatePdfLinks() {
   }
 
   // 電話番号 → 行番号マップ（ハイフン除去済み）
+  const data = sheet.getDataRange().getValues();
+  const headers = data[0];
+  const phoneColIdx = headers.indexOf("電話番号");
+  if (phoneColIdx === -1) {
+    SpreadsheetApp.getUi().alert("エラー", "「電話番号」列が見つかりません。", SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
   const phoneToRow = {};
   for (let i = 1; i < data.length; i++) {
     const phone = String(data[i][phoneColIdx] || "").replace(/[-\s]/g, "").trim();
@@ -320,11 +384,11 @@ function updatePdfLinks() {
       while (subFolders.hasNext()) {
         const sub = subFolders.next();
         if (sub.getName() === "SoftBank") {
-          _collectSoftBankPdfs(sub, pdfEntries);
+          _collectSoftBankPdfs_(sub, pdfEntries);
         }
       }
-      // 旧形式: 月フォルダ直下（キャリアフォルダ追加前との互換）
-      _collectSoftBankPdfs(monthFolder, pdfEntries);
+      // 旧形式: 月フォルダ直下（後方互換）
+      _collectSoftBankPdfs_(monthFolder, pdfEntries);
     }
   }
 
@@ -335,9 +399,9 @@ function updatePdfLinks() {
 
   // 必要な月列を確保（右→左の順で挿入してインデックスのずれを防ぐ）
   const neededHeaders = [...new Set(pdfEntries.map(e => `${e.year}年${parseInt(e.month)}月`))];
-  neededHeaders.sort((a, b) => _monthHeaderToNum(b) - _monthHeaderToNum(a)); // 降順（右→左に挿入）
+  neededHeaders.sort((a, b) => _monthHeaderToNum_(b) - _monthHeaderToNum_(a)); // 降順（右→左に挿入）
   for (const header of neededHeaders) {
-    _ensureMonthColumn(sheet, header);
+    _ensureMonthColumn_(sheet, header);
   }
 
   // ハイパーリンクを書き込む（同月複数PDFは2件目以降をセルのメモに追記）
@@ -347,7 +411,7 @@ function updatePdfLinks() {
     const rowNum = phoneToRow[entry.phone];
     if (!rowNum) continue;
 
-    const colNum = _getMonthColumnNum(sheet, entry.year, entry.month);
+    const colNum = _getMonthColumnNum_(sheet, entry.year, entry.month);
     if (!colNum) continue;
 
     const key = `${entry.phone}_${entry.year}${entry.month}`;
@@ -374,11 +438,32 @@ function updatePdfLinks() {
 }
 
 
+// ────────────────────────────────────────────────
+//  内部ヘルパー関数
+// ────────────────────────────────────────────────
+
 /**
- * フォルダ内のSoftBank命名規則PDFを収集するヘルパー
+ * 設定シートから指定キーの値を返す。見つからなければ null。
+ */
+function _getSettingValue_(key) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SETTINGS_SHEET_NAME);
+  if (!sheet) return null;
+  const data = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() === key) {
+      return String(data[i][1]).trim() || null;
+    }
+  }
+  return null;
+}
+
+
+/**
+ * フォルダ内のSoftBank命名規則PDFを収集する
  * ファイル名形式: YYYYMM_SoftBank_{phone}_*.pdf
  */
-function _collectSoftBankPdfs(folder, results) {
+function _collectSoftBankPdfs_(folder, results) {
   const files = folder.getFiles();
   while (files.hasNext()) {
     const file = files.next();
@@ -393,28 +478,25 @@ function _collectSoftBankPdfs(folder, results) {
 /**
  * "2025年2月" → 202502 に変換（数値ソート用）
  */
-function _monthHeaderToNum(header) {
+function _monthHeaderToNum_(header) {
   const m = String(header).match(/^(\d{4})年(\d+)月$/);
   if (!m) return 0;
   return parseInt(m[1]) * 100 + parseInt(m[2]);
 }
 
 
-const MONTH_COL_START = 5; // E列（1-indexed）
-
-
 /**
  * 月列が存在しなければ日付順の位置に挿入する
  */
-function _ensureMonthColumn(sheet, monthHeader) {
+function _ensureMonthColumn_(sheet, monthHeader) {
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   if (headers.includes(monthHeader)) return; // 既に存在
 
-  const targetNum = _monthHeaderToNum(monthHeader);
+  const targetNum = _monthHeaderToNum_(monthHeader);
   let insertAt = sheet.getLastColumn() + 1; // デフォルトは末尾
 
   for (let i = MONTH_COL_START - 1; i < headers.length; i++) {
-    const colNum = _monthHeaderToNum(String(headers[i]));
+    const colNum = _monthHeaderToNum_(String(headers[i]));
     if (colNum > 0 && targetNum < colNum) {
       insertAt = i + 1; // 1-indexed
       sheet.insertColumnBefore(insertAt);
@@ -436,13 +518,17 @@ function _ensureMonthColumn(sheet, monthHeader) {
 /**
  * 月列の列番号（1-indexed）を返す。存在しなければ null。
  */
-function _getMonthColumnNum(sheet, year, month) {
+function _getMonthColumnNum_(sheet, year, month) {
   const header = `${year}年${parseInt(month)}月`;
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const idx = headers.indexOf(header);
   return idx === -1 ? null : idx + 1;
 }
 
+
+// ────────────────────────────────────────────────
+//  メニュー
+// ────────────────────────────────────────────────
 
 /**
  * メニューにカスタムメニューを追加
