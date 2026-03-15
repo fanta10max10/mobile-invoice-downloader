@@ -986,16 +986,18 @@ def download_pdf_from_page(
             log.info("  一括印刷用PDFリンクが見つかりませんでした")
 
     # ── 電話番号別PDF / 機種別PDF ──
+    # idx番号はSoftBankのページ変更で入れ替わることがあるため、リンクテキストで種別を判定する
     if "電話番号別" in pdf_types or "機種別" in pdf_types:
         msn_links = page.locator('a[href*="doPrintMsn"]')
         if msn_links.count() > 0:
             for i in range(msn_links.count()):
                 link = msn_links.nth(i)
-                href = link.get_attribute("href") or ""
-                if "idx=2" in href and "電話番号別" in pdf_types:
+                link_text = (link.text_content() or "").strip()
+                log.info(f"  doPrintMsnリンク[{i}]: {link_text}")
+                if "電話番号別" in link_text and "電話番号別" in pdf_types:
                     if _download_single_pdf(page, link, "電話番号別", save_dir, year, month, phone, amount):
                         any_success = True
-                elif "idx=3" in href and "機種別" in pdf_types:
+                elif "機種別" in link_text and "機種別" in pdf_types:
                     if _download_single_pdf(page, link, "機種別", save_dir, year, month, phone, amount):
                         any_success = True
         else:
