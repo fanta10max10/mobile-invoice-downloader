@@ -250,7 +250,11 @@ def load_accounts() -> pd.DataFrame:
 
 
 CODE_FILE = Path("/tmp/softbank_security_code.txt")
-SESSION_FILE = Path("/tmp/softbank_session.json")
+
+
+def _session_file(phone_number: str) -> Path:
+    """電話番号ごとに独立したセッションファイルパスを返す（アカウント干渉防止）"""
+    return Path(f"/tmp/softbank_session_{phone_number}.json")
 
 
 def ask_security_code(phone_number: str) -> str | None:
@@ -700,54 +704,62 @@ def do_login_and_navigate(page, phone_number: str, password: str) -> bool:
         log.info("  認証なしでPDFページに到達しました")
         return True
 
-    # ── Step 2: ログイン情報の入力 ──
-    log.info("ログイン情報を入力中...")
+    # ── Step 2: ページ状態を確認してログインまたは2FAフローへ ──
+    page_text = _get_page_text(page)
 
-    # ログインフォームがあるか確認
-    phone_input = (
-        page.locator('input[name="telnum"]')
-        .or_(page.locator('input.sbid-msn-check'))
-        .or_(page.locator('input[name="username"]'))
-        .or_(page.locator('input[name="msn"]'))
-        .or_(page.locator('input[name="loginId"]'))
-    )
+    # セキュリティ番号ページに既にいる場合（セッション再利用時）はログインをスキップ
+    if "セキュリティ番号" in page_text or "送付先" in page_text:
+        log.info("  セキュリティ番号ページを検出（セッション再利用）→ ログインをスキップして2FAフローへ")
+        if not _handle_security_code_flow(page, phone_number, password):
+            return False
+    else:
+        log.info("ログイン情報を入力中...")
 
-    try:
-        phone_input.first.wait_for(state="visible", timeout=10000)
-        phone_input.first.fill(phone_number)
-        log.info("  電話番号を入力しました")
-
-        pw_input = page.locator('input[type="password"]')
-        pw_input.first.wait_for(state="visible", timeout=10000)
-        pw_input.first.fill(password)
-        log.info("  パスワードを入力しました")
-
-        login_btn = (
-            page.locator('input[type="submit"]')
-            .or_(page.get_by_text("ログインする", exact=False))
-            .or_(page.get_by_role("link", name=re.compile(r"ログイン")))
-            .or_(page.get_by_role("button", name=re.compile(r"ログイン")))
-            .or_(page.locator('button[type="submit"]'))
+        # ログインフォームがあるか確認
+        phone_input = (
+            page.locator('input[name="telnum"]')
+            .or_(page.locator('input.sbid-msn-check'))
+            .or_(page.locator('input[name="username"]'))
+            .or_(page.locator('input[name="msn"]'))
+            .or_(page.locator('input[name="loginId"]'))
         )
-        _click_any_button(page, login_btn, "ログインボタン", text_hint="ログイン")
-        # ログインフォーム（電話番号入力欄）が消えるまで待つ
+
         try:
-            page.wait_for_function(
-                "() => !document.querySelector('input[name=\"telnum\"]')",
-                timeout=15000,
+            phone_input.first.wait_for(state="visible", timeout=10000)
+            phone_input.first.fill(phone_number)
+            log.info("  電話番号を入力しました")
+
+            pw_input = page.locator('input[type="password"]')
+            pw_input.first.wait_for(state="visible", timeout=10000)
+            pw_input.first.fill(password)
+            log.info("  パスワードを入力しました")
+
+            login_btn = (
+                page.locator('input[type="submit"]')
+                .or_(page.get_by_text("ログインする", exact=False))
+                .or_(page.get_by_role("link", name=re.compile(r"ログイン")))
+                .or_(page.get_by_role("button", name=re.compile(r"ログイン")))
+                .or_(page.locator('button[type="submit"]'))
             )
-            log.info("  ログインフォームが消えました（認証処理完了）")
-        except Exception:
-            pass
-        try:
-            page.wait_for_load_state("networkidle", timeout=10000)
-        except Exception:
-            pass
-        time.sleep(3)
-        log.info(f"  ログイン後のURL: {page.url}")
-    except (PlaywrightTimeout, Exception) as e:
-        log.error(f"  ログインフォームの操作に失敗: {e}")
-        return False
+            _click_any_button(page, login_btn, "ログインボタン", text_hint="ログイン")
+            # ログインフォーム（電話番号入力欄）が消えるまで待つ
+            try:
+                page.wait_for_function(
+                    "() => !document.querySelector('input[name=\"telnum\"]')",
+                    timeout=15000,
+                )
+                log.info("  ログインフォームが消えました（認証処理完了）")
+            except Exception:
+                pass
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            time.sleep(3)
+            log.info(f"  ログイン後のURL: {page.url}")
+        except (PlaywrightTimeout, Exception) as e:
+            log.error(f"  ログインフォームの操作に失敗: {e}")
+            return False
 
     # ── Step 3: ログイン後にエラーがないか確認 ──
     if _is_on_auth_page(page):
@@ -1026,9 +1038,10 @@ def download_billing_pdf(
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
         )
-        if SESSION_FILE.exists():
-            log.info(f"  保存済みセッションを読み込み: {SESSION_FILE}")
-            ctx_kwargs["storage_state"] = str(SESSION_FILE)
+        session_file = _session_file(phone_number)
+        if session_file.exists():
+            log.info(f"  保存済みセッションを読み込み: {session_file}")
+            ctx_kwargs["storage_state"] = str(session_file)
         context = browser.new_context(**ctx_kwargs)
         page = context.new_page()
         page.set_default_timeout(30000)
@@ -1046,8 +1059,8 @@ def download_billing_pdf(
 
             # ── セッション保存（次回以降の認証をスキップするため） ──
             try:
-                context.storage_state(path=str(SESSION_FILE))
-                log.info(f"  セッションを保存しました: {SESSION_FILE}")
+                context.storage_state(path=str(session_file))
+                log.info(f"  セッションを保存しました: {session_file}")
             except Exception as e:
                 log.warning(f"  セッション保存に失敗: {e}")
 
@@ -1084,11 +1097,25 @@ def main():
     """メイン関数"""
     log.info("My SoftBank 料金明細PDFダウンロードを開始します")
 
-    # 対象月の決定
+    # 対象月の決定（優先順: 環境変数 TARGET_MONTH → 設定シート → 前月自動）
     year, month = get_target_month()
+    if not TARGET_MONTH:
+        try:
+            gc = get_gspread_client()
+            sh = gc.open_by_key(SPREADSHEET_ID)
+            ws = sh.worksheet("設定")
+            for row in ws.get_all_records():
+                if str(row.get("設定名", "")).strip() == "対象月":
+                    val = str(row.get("値", "")).strip()
+                    if re.match(r"^\d{6}$", val):
+                        year, month = val[:4], val[4:6]
+                        log.info(f"対象月（設定シートから取得）: {year}年{month}月")
+                    break
+        except Exception as e:
+            log.warning(f"設定シートから対象月の取得に失敗: {e}")
     log.info(f"対象月: {year}年{month}月")
 
-    # 保存先の決定（スプレッドシート → 環境変数の順に探す）
+    # 保存先の決定（スプレッドシート設定シート → 環境変数の順に探す）
     base_path = resolve_save_path()
     save_dir = ensure_save_dir(base_path, year, month)
     log.info(f"保存先: {save_dir}")
