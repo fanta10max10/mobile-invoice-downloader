@@ -416,7 +416,10 @@ function updatePdfLinks() {
     processed.add(key);
 
     const url = entry.file.getUrl();
-    const label = `${parseInt(entry.month)}月`;
+    const amountMatch = entry.file.getName().match(/_(\d+)円\.pdf$/);
+    const label = amountMatch
+      ? `${parseInt(entry.month)}月 ${Number(amountMatch[1]).toLocaleString()}円`
+      : `${parseInt(entry.month)}月`;
     sheet.getRange(rowNum, colNum).setFormula(`=HYPERLINK("${url}","${label}")`);
     updatedCount++;
   }
@@ -518,6 +521,166 @@ function _getMonthColumnNum_(sheet, year, month) {
 
 
 // ────────────────────────────────────────────────
+//  PDFから金額を取得・ファイル名更新
+// ────────────────────────────────────────────────
+
+/**
+ * ファイル名に金額が入っていないSoftBank PDFをOCRで解析し、
+ * ファイル名とスプレッドシートのリンクラベルを更新する。
+ *
+ * 【事前準備】拡張機能 → Apps Script → サービス から
+ *   「Drive API」(v2) を追加すること。
+ */
+function scanAndUpdatePdfAmounts() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert("エラー", `「${SHEET_NAME}」シートが見つかりません。`, SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  const rootFolderUrl = _getSettingValue_("PDF保存先フォルダ");
+  if (!rootFolderUrl || !rootFolderUrl.startsWith("https://drive.google.com/")) {
+    SpreadsheetApp.getUi().alert(
+      "エラー",
+      "「設定」シートの「PDF保存先フォルダ」にGoogle DriveのフォルダURLが設定されていません。",
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+    return;
+  }
+
+  const folderMatch = rootFolderUrl.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (!folderMatch) {
+    SpreadsheetApp.getUi().alert("エラー", "フォルダURLからIDを取得できませんでした。", SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+  let rootFolder;
+  try {
+    rootFolder = DriveApp.getFolderById(folderMatch[1]);
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("エラー", `フォルダへのアクセスに失敗しました: ${e.message}`, SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  // SoftBank PDFを収集
+  const pdfEntries = [];
+  const yearFolders = rootFolder.getFolders();
+  while (yearFolders.hasNext()) {
+    const yearFolder = yearFolders.next();
+    if (!/^\d{4}$/.test(yearFolder.getName())) continue;
+    const monthFolders = yearFolder.getFolders();
+    while (monthFolders.hasNext()) {
+      const monthFolder = monthFolders.next();
+      if (!/^\d{2}$/.test(monthFolder.getName())) continue;
+      const subFolders = monthFolder.getFolders();
+      while (subFolders.hasNext()) {
+        const sub = subFolders.next();
+        if (sub.getName() === "SoftBank") _collectSoftBankPdfs_(sub, pdfEntries);
+      }
+      _collectSoftBankPdfs_(monthFolder, pdfEntries);
+    }
+  }
+
+  // 「利用料金明細」（金額未取得）のものだけ対象
+  const targets = pdfEntries.filter(e => e.file.getName().endsWith("_利用料金明細.pdf"));
+  if (targets.length === 0) {
+    SpreadsheetApp.getUi().alert("情報", "金額が未取得のPDFはありませんでした。", SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  // 電話番号 → 行番号マップ
+  const data = sheet.getDataRange().getValues();
+  const headers = data[0];
+  const phoneColIdx = headers.indexOf("電話番号");
+  const phoneToRow = {};
+  for (let i = 1; i < data.length; i++) {
+    const phone = String(data[i][phoneColIdx] || "").replace(/[-\s]/g, "").trim();
+    if (phone) phoneToRow[phone] = i + 1;
+  }
+
+  let updatedCount = 0;
+  let failedCount = 0;
+  for (const entry of targets) {
+    const amount = _extractAmountFromPdf_(entry.file);
+    if (!amount) {
+      failedCount++;
+      Logger.log(`金額取得失敗: ${entry.file.getName()}`);
+      continue;
+    }
+
+    // ファイル名を更新: _利用料金明細.pdf → _{amount}円.pdf
+    const newName = entry.file.getName().replace("_利用料金明細.pdf", `_${amount}円.pdf`);
+    entry.file.setName(newName);
+
+    // スプレッドシートのリンクラベルを更新
+    const rowNum = phoneToRow[entry.phone];
+    if (rowNum) {
+      const colNum = _getMonthColumnNum_(sheet, entry.year, entry.month);
+      if (colNum) {
+        const url = entry.file.getUrl();
+        const label = `${parseInt(entry.month)}月 ${Number(amount).toLocaleString()}円`;
+        sheet.getRange(rowNum, colNum).setFormula(`=HYPERLINK("${url}","${label}")`);
+      }
+    }
+    updatedCount++;
+  }
+
+  SpreadsheetApp.getUi().alert(
+    "完了",
+    `${targets.length} 件を処理しました。\n` +
+    `  更新: ${updatedCount} 件\n` +
+    `  金額取得失敗: ${failedCount} 件`,
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+}
+
+
+/**
+ * PDFファイルをOCRで読み取り、SoftBankの請求金額（数値文字列）を返す。
+ * 取得できなければ null を返す。
+ * Drive API v2 (Advanced Google Services) が必要。
+ */
+function _extractAmountFromPdf_(file) {
+  let docFileId = null;
+  try {
+    const blob = file.getBlob();
+    const docFile = Drive.Files.insert(
+      { title: "tmp_ocr_" + file.getName() },
+      blob,
+      { convert: true }
+    );
+    docFileId = docFile.id;
+    const doc = DocumentApp.openById(docFileId);
+    const text = doc.getBody().getText();
+
+    // SoftBankの請求金額を抽出するパターン（複数パターンを優先順で試す）
+    const patterns = [
+      /ご請求金額[^\d]*([\d,]+)/,
+      /請求金額[^\d]*([\d,]+)/,
+      /ご請求合計[^\d]*([\d,]+)/,
+      /合計金額[^\d]*([\d,]+)/,
+    ];
+    for (const pattern of patterns) {
+      const m = text.match(pattern);
+      if (m) {
+        const amount = m[1].replace(/,/g, "");
+        if (/^\d+$/.test(amount)) return amount;
+      }
+    }
+    Logger.log(`金額パターン不一致。OCRテキスト先頭200文字: ${text.substring(0, 200)}`);
+    return null;
+  } catch (e) {
+    Logger.log(`OCRエラー (${file.getName()}): ${e.message}`);
+    return null;
+  } finally {
+    if (docFileId) {
+      try { Drive.Files.remove(docFileId); } catch (_) {}
+    }
+  }
+}
+
+
+// ────────────────────────────────────────────────
 //  メニュー
 // ────────────────────────────────────────────────
 
@@ -532,5 +695,7 @@ function onOpen() {
     .addItem("「PDFの種類」列を追加（既存シート用）", "addPdfTypeColumn")
     .addSeparator()
     .addItem("PDFリンクを更新", "updatePdfLinks")
+    .addSeparator()
+    .addItem("PDFから金額を取得・ファイル名更新", "scanAndUpdatePdfAmounts")
     .addToUi();
 }

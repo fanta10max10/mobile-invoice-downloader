@@ -115,7 +115,7 @@ def find_gdrive_local_root() -> Path | None:
 
 def drive_url_to_local_path(url: str) -> str | None:
     """Google DriveのフォルダURLからローカルパスに変換する。
-    フォルダIDをxattrで直接チェック（RTFファイル横のマッピングファイルも参照）。
+    drive_path_map.txt のマッピングを参照し、マップにない場合はxattrで検索する。
     """
     import subprocess
 
