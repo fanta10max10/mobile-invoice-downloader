@@ -170,9 +170,45 @@ function setupSettingsSheet_(ss) {
     "・Macのローカル絶対パス（/Users/...）"
   );
   _upsertSettingRow_(sheet, "対象月",
-    "",
-    "ダウンロードする月を YYYYMM 形式で指定（例: 202602）\n空欄の場合は前月が自動選択されます"
+    "自動（前月）",
+    "ダウンロードする月を選択してください\n「自動（前月）」= 実行時の前月を自動選択"
   );
+
+  // 「対象月」の値セルにドロップダウンを設定（常に最新の月リストで更新）
+  _setTargetMonthValidation_(sheet);
+}
+
+
+/**
+ * 「対象月」行の値セルに直近13ヶ月のドロップダウンを設定する
+ */
+function _setTargetMonthValidation_(sheet) {
+  const data = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() !== "対象月") continue;
+
+    // 直近13ヶ月の選択肢を生成（現在月〜13ヶ月前）
+    const options = ["自動（前月）"];
+    const now = new Date();
+    for (let m = 0; m < 13; m++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - m, 1);
+      options.push(`${d.getFullYear()}年${d.getMonth() + 1}月`);
+    }
+
+    const valCell = sheet.getRange(i + 1, 2);
+    const rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(options, true)
+      .setAllowInvalid(false)
+      .setHelpText("ダウンロードする月を選択。「自動（前月）」なら実行時の前月を自動選択します。")
+      .build();
+    valCell.setDataValidation(rule);
+
+    // 未設定の場合はデフォルト値をセット
+    if (!valCell.getValue()) {
+      valCell.setValue("自動（前月）");
+    }
+    return;
+  }
 }
 
 

@@ -1107,9 +1107,15 @@ def main():
             for row in ws.get_all_records():
                 if str(row.get("設定名", "")).strip() == "対象月":
                     val = str(row.get("値", "")).strip()
+                    # YYYYMM形式
                     if re.match(r"^\d{6}$", val):
                         year, month = val[:4], val[4:6]
                         log.info(f"対象月（設定シートから取得）: {year}年{month}月")
+                    # 「YYYY年M月」形式（ドロップダウン選択値）
+                    elif m2 := re.match(r"^(\d{4})年(\d+)月$", val):
+                        year, month = m2.group(1), m2.group(2).zfill(2)
+                        log.info(f"対象月（設定シートから取得）: {year}年{month}月")
+                    # 「自動（前月）」または空欄はデフォルト（前月）のまま
                     break
         except Exception as e:
             log.warning(f"設定シートから対象月の取得に失敗: {e}")
