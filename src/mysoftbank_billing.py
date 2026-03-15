@@ -51,6 +51,8 @@ TARGET_MONTH = os.environ.get("TARGET_MONTH")
 HEADLESS = os.environ.get("HEADLESS", "true").lower() in ("true", "1", "yes")
 # セキュリティ番号入力のタイムアウト(秒)
 SECURITY_CODE_TIMEOUT = int(os.environ.get("SECURITY_CODE_TIMEOUT", "300"))
+# アカウント間のインターバル(秒)。SMS連続送信のレート制限対策
+ACCOUNT_INTERVAL = int(os.environ.get("ACCOUNT_INTERVAL", "60"))
 
 LOGIN_URL = "https://my.softbank.jp/msb/d/webLink/doSend/MSB010000"
 # ログイン後の実際のドメイン
@@ -245,6 +247,9 @@ def load_accounts() -> pd.DataFrame:
     # PDFの種類列がなければデフォルト値を補完
     if "PDFの種類" not in df.columns:
         df["PDFの種類"] = "電話番号別"
+    # SMS送付先末尾4桁列がなければ空欄補完（なければ電話番号末尾4桁を使用）
+    if "SMS送付先末尾4桁" not in df.columns:
+        df["SMS送付先末尾4桁"] = ""
     log.info(f"  {len(df)} 件のアカウントを読み込みました")
     return df
 
@@ -513,7 +518,9 @@ def _click_send_button(page) -> str | None:
         return None
 
 
-def _handle_security_code_flow(page, phone_number: str, password: str = "") -> bool:
+def _handle_security_code_flow(
+    page, phone_number: str, password: str = "", sms_last4: str | None = None
+) -> bool:
     """セキュリティ番号の送信→入力→確認の一連のフローを処理する。
     認証ページ(id.my.softbank.jp)にいる場合に呼ばれる。
     ループで各ページ状態を判定しながら処理する。成功時 True を返す。
@@ -522,9 +529,12 @@ def _handle_security_code_flow(page, phone_number: str, password: str = "") -> b
       A: ラジオ選択 → 送信 → 確認ページ → 送信 → 入力 → 本人確認
       B: ラジオなし確認ページ → 送信 → 入力 → 本人確認
       C: 直接セキュリティ番号入力ページ
+
+    sms_last4: SMS送付先電話番号の末尾4桁（スプレッドシートで指定）。
+               未指定時は phone_number の末尾4桁を使用。
     """
     log.info("セキュリティ番号フロー開始...")
-    last4 = phone_number[-4:]
+    last4 = sms_last4 if sms_last4 else phone_number[-4:]
 
     for attempt in range(8):  # 最大8ステップ
         _wait_for_page_stable(page)
@@ -685,7 +695,9 @@ def _is_on_auth_page(page) -> bool:
     return "id.my.softbank.jp" in page.url
 
 
-def do_login_and_navigate(page, phone_number: str, password: str) -> bool:
+def do_login_and_navigate(
+    page, phone_number: str, password: str, sms_last4: str | None = None
+) -> bool:
     """ログイン → 2FA → PDFダウンロードページまで一気に遷移する。
 
     戦略: PDFページ(BILL_PDF_URL)に直接アクセスし、SoftBankが自動で
@@ -710,7 +722,7 @@ def do_login_and_navigate(page, phone_number: str, password: str) -> bool:
     # セキュリティ番号ページに既にいる場合（セッション再利用時）はログインをスキップ
     if "セキュリティ番号" in page_text or "送付先" in page_text:
         log.info("  セキュリティ番号ページを検出（セッション再利用）→ ログインをスキップして2FAフローへ")
-        if not _handle_security_code_flow(page, phone_number, password):
+        if not _handle_security_code_flow(page, phone_number, password, sms_last4):
             return False
     else:
         log.info("ログイン情報を入力中...")
@@ -774,7 +786,7 @@ def do_login_and_navigate(page, phone_number: str, password: str) -> bool:
 
         # ログインは成功したが、セキュリティ番号が必要（1回目の2FA）
         log.info("  認証ページにいます → セキュリティ番号フローを処理します（1回目）")
-        if not _handle_security_code_flow(page, phone_number, password):
+        if not _handle_security_code_flow(page, phone_number, password, sms_last4):
             return False
 
     log.info(f"  1回目の認証後のURL: {page.url}")
@@ -846,7 +858,7 @@ def do_login_and_navigate(page, phone_number: str, password: str) -> bool:
 
         # セキュリティ番号フロー（2回目）
         if _is_on_auth_page(page):
-            if not _handle_security_code_flow(page, phone_number, password):
+            if not _handle_security_code_flow(page, phone_number, password, sms_last4):
                 return False
 
     # ── 最終確認 ──
@@ -1015,9 +1027,13 @@ def download_billing_pdf(
     month: str,
     save_dir: Path,
     pdf_types: set[str] | None = None,
-) -> bool:
+    sms_last4: str | None = None,
+) -> tuple[bool, bool]:
     """1アカウント分のPDFダウンロード処理。
     ログイン → 書面発行 → 自分で印刷する → 月選択 → PDFダウンロード
+
+    Returns:
+        (success, skipped): skipped=True の場合は既ダウンロード済みでスキップ
     """
     if pdf_types is None:
         pdf_types = {"電話番号別"}
@@ -1025,7 +1041,7 @@ def download_billing_pdf(
 
     # 既にダウンロード済みならスキップ
     if check_already_downloaded(save_dir, year, month, phone_number):
-        return True
+        return True, True
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
@@ -1051,13 +1067,13 @@ def download_billing_pdf(
         success = False
         try:
             # ── ログイン → PDFページまで一気に遷移 ──
-            if not do_login_and_navigate(page, phone_number, password):
+            if not do_login_and_navigate(page, phone_number, password, sms_last4):
                 _save_debug_screenshot(
                     page, save_dir, phone_number, year, month,
                     "ログインまたはページ遷移失敗",
                     f"PDFダウンロードページに到達できませんでした。最終URL: {page.url}",
                 )
-                return False
+                return False, False
 
             # ── セッション保存（次回以降の認証をスキップするため） ──
             try:
@@ -1072,7 +1088,7 @@ def download_billing_pdf(
                     page, save_dir, phone_number, year, month,
                     "月選択失敗", f"対象月 {year}{month} の選択に失敗しました",
                 )
-                return False
+                return False, False
 
             # ── PDFダウンロード ──
             success = download_pdf_from_page(page, save_dir, year, month, phone_number, pdf_types)
@@ -1092,7 +1108,7 @@ def download_billing_pdf(
             context.close()
             browser.close()
 
-    return success
+    return success, False
 
 
 def main():
@@ -1133,13 +1149,21 @@ def main():
 
     # 各アカウントについてPDFをダウンロード
     results = []
-    for _, row in accounts.iterrows():
+    account_list = list(accounts.iterrows())
+    for i, (_, row) in enumerate(account_list):
         phone = str(row["電話番号"]).strip()
         pw = str(row["パスワード"]).strip()
         pdf_types = parse_pdf_types(row.get("PDFの種類", "電話番号別"))
+        sms_last4 = str(row.get("SMS送付先末尾4桁", "") or "").strip() or None
 
-        ok = download_billing_pdf(phone, pw, year, month, save_dir, pdf_types)
+        ok, skipped = download_billing_pdf(phone, pw, year, month, save_dir, pdf_types, sms_last4)
         results.append((phone, ok))
+
+        # SMS認証を行ったアカウントの後はインターバルを入れる（SoftBankのSMS連続送信制限対策）
+        is_last = i == len(account_list) - 1
+        if not skipped and not is_last and ACCOUNT_INTERVAL > 0:
+            log.info(f"  次のアカウント処理まで {ACCOUNT_INTERVAL} 秒待機します（SMS連続送信制限対策）...")
+            time.sleep(ACCOUNT_INTERVAL)
 
     # 結果サマリー
     log.info("=" * 50)
