@@ -1,6 +1,7 @@
 # 機密情報（絶対にGitHubにアップしない）
 .env
 MySoftBank_アカウント管理スプシURL.rtf
+src/service_account.json
 
 # Python
 __pycache__/

@@ -3,7 +3,7 @@
 My SoftBank 料金明細PDF自動ダウンロードスクリプト
 
 前提:
-  - アカウント情報はGoogleスプレッドシートの「ウェブに公開」CSV URLから取得
+  - アカウント情報はGoogleスプレッドシート（サービスアカウント認証）から取得
   - PDFはGoogleドライブ（ローカル）に年月フォルダ構成で保存
   - 2段階認証(セキュリティ番号)はターミナルのinput()で手動入力
 """
@@ -16,15 +16,18 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 
+import gspread
 import pandas as pd
 from dotenv import load_dotenv
+from google.oauth2.service_account import Credentials
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 # ─── 設定 ───────────────────────────────────────────────
 
 load_dotenv()
 
-SPREADSHEET_CSV_URL = os.environ.get("SPREADSHEET_CSV_URL")
+# スプレッドシートID（URLの /d/〜/edit の部分）
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1zf_4GNx5kRzRGLXQu0MEPk4kyjjj9R7gE2wS78qEm7c")
 BASE_SAVE_PATH = os.environ.get("BASE_SAVE_PATH")
 # ダウンロード対象月 (YYYYMM)。未指定時は前月
 TARGET_MONTH = os.environ.get("TARGET_MONTH")
@@ -67,54 +70,14 @@ def strip_hyphens(phone: str) -> str:
     return re.sub(r"[-\s\u2010-\u2015\u2212\uFF0D]", "", phone)
 
 
-def read_urls_from_rtf() -> list[str]:
-    """RTFファイルからすべてのURLを抽出する"""
-    rtf_path = Path(__file__).parent / "MySoftBank_アカウント管理スプシURL.rtf"
-    if not rtf_path.exists():
-        return []
-    raw = rtf_path.read_text(encoding="utf-8", errors="ignore")
-    return re.findall(r"(https?://[^\s}\\]+)", raw)
-
-
-def resolve_csv_url() -> str:
-    """アカウントシートのCSV URLを取得する。
-    1. 環境変数 SPREADSHEET_CSV_URL
-    2. RTFファイルの1番目のURL
-    の順に探す。
-    """
-    url = SPREADSHEET_CSV_URL
-    if url:
-        return url.strip()
-
-    urls = read_urls_from_rtf()
-    if urls:
-        log.info("RTFファイルからアカウントCSV URLを取得しました")
-        return urls[0]
-
-    log.error(
-        "スプレッドシートCSV URLが見つかりません。\n"
-        "  環境変数 SPREADSHEET_CSV_URL を設定するか、\n"
-        "  同ディレクトリに MySoftBank_アカウント管理スプシURL.rtf を配置してください。"
+def get_gspread_client() -> gspread.Client:
+    """サービスアカウント認証済みの gspread クライアントを返す"""
+    json_path = Path(__file__).parent / "service_account.json"
+    creds = Credentials.from_service_account_file(
+        str(json_path),
+        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
     )
-    sys.exit(1)
-
-
-def resolve_settings_csv_url() -> str | None:
-    """設定シートのCSV URLを取得する。
-    1. 環境変数 SETTINGS_CSV_URL
-    2. RTFファイルの2番目のURL
-    の順に探す。見つからなければ None を返す。
-    """
-    url = os.environ.get("SETTINGS_CSV_URL")
-    if url:
-        return url.strip()
-
-    urls = read_urls_from_rtf()
-    if len(urls) >= 2:
-        log.info("RTFファイルから設定CSV URLを取得しました")
-        return urls[1]
-
-    return None
+    return gspread.authorize(creds)
 
 
 def find_gdrive_local_root() -> Path | None:
@@ -178,46 +141,27 @@ def drive_url_to_local_path(url: str) -> str | None:
 def resolve_save_path() -> str:
     """PDF保存先パスを取得する。
     優先順:
-      1. 設定シートCSVの「PDF保存先フォルダ」行
+      1. スプレッドシート「設定」シートの「PDF保存先フォルダ」行
          - Google DriveのURL: マッピングファイル参照→ローカルパスに変換
          - ローカルパス（/で始まる）: そのまま使用
-      2. アカウントシートCSVの旧「PDF保存先」列（後方互換）
-      3. 環境変数 BASE_SAVE_PATH
+      2. 環境変数 BASE_SAVE_PATH
     """
     # ── 1. 設定シートから取得 ──
-    settings_url = resolve_settings_csv_url()
-    if settings_url:
-        try:
-            df = pd.read_csv(settings_url)
-            df.columns = df.columns.str.strip()
-            if "設定名" in df.columns and "値" in df.columns:
-                mask = df["設定名"].astype(str).str.strip() == "PDF保存先フォルダ"
-                if mask.any():
-                    save_path = str(df.loc[mask, "値"].iloc[0]).strip()
-                    if save_path and save_path.lower() != "nan":
-                        result = _parse_save_path(save_path, source="設定シート")
-                        if result:
-                            return result
-        except Exception as e:
-            log.warning(f"設定シートからの保存先取得に失敗: {e}")
-
-    # ── 2. アカウントシートの旧列から取得（後方互換） ──
     try:
-        csv_url = resolve_csv_url()
-        df = pd.read_csv(csv_url)
-        df.columns = df.columns.str.strip()
-        col = next((c for c in ("PDF保存先フォルダ", "PDF保存先") if c in df.columns), None)
-        if col:
-            paths = df[col].dropna().astype(str).str.strip()
-            paths = paths[paths != ""]
-            if len(paths) > 0:
-                result = _parse_save_path(paths.iloc[0], source="アカウントシート")
-                if result:
-                    return result
+        gc = get_gspread_client()
+        sh = gc.open_by_key(SPREADSHEET_ID)
+        ws = sh.worksheet("設定")
+        for row in ws.get_all_records():
+            if str(row.get("設定名", "")).strip() == "PDF保存先フォルダ":
+                save_path = str(row.get("値", "")).strip()
+                if save_path and save_path.lower() != "nan":
+                    result = _parse_save_path(save_path, source="設定シート")
+                    if result:
+                        return result
     except Exception as e:
-        log.warning(f"アカウントシートからの保存先取得に失敗: {e}")
+        log.warning(f"設定シートからの保存先取得に失敗: {e}")
 
-    # ── 3. 環境変数 ──
+    # ── 2. 環境変数 ──
     if BASE_SAVE_PATH:
         return BASE_SAVE_PATH
 
@@ -265,10 +209,13 @@ def parse_pdf_types(raw: str) -> set[str]:
 
 
 def load_accounts() -> pd.DataFrame:
-    """スプレッドシートCSV URLからアカウント情報を読み込む"""
-    csv_url = resolve_csv_url()
+    """スプレッドシート「アカウント」シートからアカウント情報を読み込む"""
     log.info("スプレッドシートからアカウント情報を読み込み中...")
-    df = pd.read_csv(csv_url)
+    gc = get_gspread_client()
+    sh = gc.open_by_key(SPREADSHEET_ID)
+    ws = sh.worksheet("アカウント")
+    records = ws.get_all_records()
+    df = pd.DataFrame(records)
     # ヘッダー正規化 (前後の空白除去)
     df.columns = df.columns.str.strip()
     required = {"電話番号", "パスワード"}
