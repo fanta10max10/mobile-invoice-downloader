@@ -4,7 +4,7 @@ My SoftBank 料金明細PDF自動ダウンロードスクリプト
 
 前提:
   - アカウント情報はGoogleスプレッドシート（サービスアカウント認証）から取得
-  - PDFはGoogleドライブ（ローカル）に年月フォルダ構成で保存
+  - PDFはGoogle Drive API経由で直接アップロード（またはローカルパスに保存）
   - 2段階認証(セキュリティ番号)はターミナルのinput()で手動入力
 """
 
@@ -12,14 +12,20 @@ import os
 import re
 import sys
 import time
+import shutil
 import logging
+import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from typing import Any
 
 import gspread
 import pandas as pd
 from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 # ─── 設定 ───────────────────────────────────────────────
@@ -66,6 +72,94 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+CARRIER_NAME = "SoftBank"
+
+# Drive APIモード時のコンテキスト（ローカルパスモード時はNone）
+_drive_ctx: "DriveContext | None" = None
+# Drive APIモード時のPDF一時保存ディレクトリ
+_temp_save_dir: Path | None = None
+
+
+# ─── Google Drive API ─────────────────────────────────────
+
+@dataclass
+class DriveContext:
+    """Google Drive API を使ったフォルダ作成・存在確認・アップロードを担うクラス"""
+    base_folder_id: str
+    service: Any = field(init=False)
+    _folder_cache: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        self.service = _get_drive_service()
+
+    def _get_or_create_folder(self, parent_id: str, name: str) -> str:
+        """指定名のサブフォルダを取得または作成してIDを返す"""
+        key = f"{parent_id}/{name}"
+        if key in self._folder_cache:
+            return self._folder_cache[key]
+        q = (
+            f"name='{name}' and '{parent_id}' in parents "
+            f"and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        )
+        res = self.service.files().list(q=q, fields="files(id)").execute()
+        files = res.get("files", [])
+        if files:
+            fid = files[0]["id"]
+        else:
+            meta = {
+                "name": name,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent_id],
+            }
+            fid = self.service.files().create(body=meta, fields="id").execute()["id"]
+            log.info(f"  Driveフォルダを作成しました: {name}")
+        self._folder_cache[key] = fid
+        return fid
+
+    def get_folder_id(self, year: str, month: str) -> str:
+        """base_folder_id/YYYY/MM/SoftBank のフォルダIDを返す（なければ作成）"""
+        year_id = self._get_or_create_folder(self.base_folder_id, year)
+        month_id = self._get_or_create_folder(year_id, month)
+        return self._get_or_create_folder(month_id, CARRIER_NAME)
+
+    def file_exists(self, folder_id: str, year: str, month: str, phone: str) -> bool:
+        """指定フォルダ内に対象ファイルが既に存在するか確認する"""
+        prefix = f"{year}{month}_SoftBank_{phone}_"
+        q = (
+            f"name contains '{prefix}' and '{folder_id}' in parents "
+            f"and mimeType='application/pdf' and trashed=false"
+        )
+        res = self.service.files().list(q=q, fields="files(name)").execute()
+        files = res.get("files", [])
+        if files:
+            log.info(f"  既にDriveにアップロード済み: {files[0]['name']}  → スキップ")
+            return True
+        return False
+
+    def upload(self, local_path: Path, folder_id: str) -> bool:
+        """ローカルファイルをDriveフォルダにアップロードする。成功時True。"""
+        try:
+            media = MediaFileUpload(str(local_path), mimetype="application/pdf")
+            meta = {"name": local_path.name, "parents": [folder_id]}
+            self.service.files().create(
+                body=meta, media_body=media, fields="id"
+            ).execute()
+            log.info(f"  Driveにアップロード完了: {local_path.name}")
+            return True
+        except Exception as e:
+            log.error(f"  Driveアップロード失敗: {e}")
+            return False
+
+
+def _get_drive_service():
+    """Google Drive API サービスオブジェクトを返す（サービスアカウント認証）"""
+    json_path = Path(__file__).parent / "service_account.json"
+    creds = Credentials.from_service_account_file(
+        str(json_path),
+        scopes=["https://www.googleapis.com/auth/drive"],
+    )
+    return build("drive", "v3", credentials=creds)
+
 
 # ─── ユーティリティ ──────────────────────────────────────
 
@@ -96,72 +190,20 @@ def get_gspread_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 
-def find_gdrive_local_root() -> Path | None:
-    """ローカルのGoogleドライブ同期ルート（マイドライブ）を探す"""
-    cloud_storage = Path.home() / "Library" / "CloudStorage"
-    if not cloud_storage.exists():
-        return None
-    for d in cloud_storage.iterdir():
-        if d.name.startswith("GoogleDrive-"):
-            my_drive = d / "マイドライブ"
-            if my_drive.exists():
-                return my_drive
-            # 英語環境
-            my_drive_en = d / "My Drive"
-            if my_drive_en.exists():
-                return my_drive_en
-    return None
-
-
-def drive_url_to_local_path(url: str) -> str | None:
-    """Google DriveのフォルダURLからローカルパスに変換する。
-    drive_path_map.txt のマッピングを参照し、マップにない場合はxattrで検索する。
-    """
-    import subprocess
-
-    # URLからフォルダIDを抽出
-    m = re.search(r"/folders/([a-zA-Z0-9_-]+)", url)
-    if not m:
-        return None
-    folder_id = m.group(1)
-    log.info(f"Google DriveフォルダID: {folder_id}")
-
-    # マッピングファイル（drive_path_map.txt）があればそこから引く
-    map_file = Path(__file__).parent / "drive_path_map.txt"
-    if map_file.exists():
-        for line in map_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("=", 1)
-            if len(parts) == 2 and parts[0].strip() == folder_id:
-                local = parts[1].strip()
-                if Path(local).is_dir():
-                    log.info(f"マッピングファイルからローカルパスを取得: {local}")
-                    return local
-
-    # Googleドライブルートからの相対パスでxattrチェック（浅い階層のみ）
-    gdrive_root = find_gdrive_local_root()
-    if gdrive_root:
-        try:
-            result = subprocess.run(
-                ["xattr", "-p", "com.google.drivefs.item-id#S", str(gdrive_root)],
-                capture_output=True, text=True, timeout=3,
-            )
-        except Exception:
-            pass
-
-    return None
-
-
 def resolve_save_path() -> str:
     """PDF保存先パスを取得する。
+
+    Google Drive URLの場合はDrive APIモードを初期化し "drive://{folder_id}" を返す。
+    ローカルパスの場合はそのまま返す。
+
     優先順:
       1. スプレッドシート「設定」シートの「PDF保存先フォルダ」行
-         - Google DriveのURL: マッピングファイル参照→ローカルパスに変換
-         - ローカルパス（/で始まる）: そのまま使用
+         - Google DriveのURL → Drive APIで直接アップロード
+         - ローカルパス（/で始まる）→ ローカル保存
       2. 環境変数 BASE_SAVE_PATH
     """
+    global _drive_ctx, _temp_save_dir
+
     # ── 1. 設定シートから取得 ──
     try:
         gc = get_gspread_client()
@@ -171,9 +213,32 @@ def resolve_save_path() -> str:
             if str(row.get("設定名", "")).strip() == "PDF保存先フォルダ":
                 save_path = str(row.get("値", "")).strip()
                 if save_path and save_path.lower() != "nan":
-                    result = _parse_save_path(save_path, source="設定シート")
-                    if result:
-                        return result
+                    if save_path.startswith("https://"):
+                        m = re.search(r"/folders/([a-zA-Z0-9_-]+)", save_path)
+                        if m:
+                            folder_id = m.group(1)
+                            log.info(f"Drive APIモードで初期化: フォルダID={folder_id}")
+                            try:
+                                _drive_ctx = DriveContext(folder_id)
+                                _temp_save_dir = Path(tempfile.mkdtemp(prefix="softbank_pdf_"))
+                                log.info(f"一時保存ディレクトリ: {_temp_save_dir}")
+                                return f"drive://{folder_id}"
+                            except Exception as e:
+                                log.error(
+                                    f"Google Drive APIの初期化に失敗しました: {e}\n"
+                                    f"サービスアカウントにフォルダへのアクセス権限があるか確認してください。\n"
+                                    f"フォルダID: {folder_id}\n"
+                                    f"service_account.json のメールアドレスをDriveフォルダの共有設定に追加してください。"
+                                )
+                                sys.exit(1)
+                        else:
+                            log.warning(
+                                f"Google DriveのURLからフォルダIDを抽出できませんでした\n"
+                                f"  URL: {save_path}"
+                            )
+                    elif Path(save_path).is_absolute():
+                        log.info(f"ローカル保存モード: {save_path}")
+                        return save_path
     except Exception as e:
         log.warning(f"設定シートからの保存先取得に失敗: {e}")
 
@@ -183,29 +248,13 @@ def resolve_save_path() -> str:
 
     log.error(
         "PDF保存先が設定されていません。以下のいずれかを設定してください:\n"
-        "  1. スプレッドシートの「設定」シートの「PDF保存先フォルダ」にMac上のフォルダパスを記入\n"
-        "     例: /Users/yamamoto/Library/CloudStorage/GoogleDrive-.../マイドライブ/確定申告系/2026/SoftBank請求書\n"
-        "  2. 同ディレクトリに drive_path_map.txt を作成（フォルダID=ローカルパス）\n"
-        "  3. 環境変数 BASE_SAVE_PATH を設定"
+        "  1. スプレッドシートの「設定」シートの「PDF保存先フォルダ」に記入\n"
+        "     - Google DriveフォルダのURL（推奨）: https://drive.google.com/drive/folders/xxxxx\n"
+        "       ※ service_account.json のメールアドレスをフォルダの共有設定（編集者）に追加してください\n"
+        "     - Macのローカル絶対パス: /Users/.../マイドライブ/確定申告系/携帯領収書管理\n"
+        "  2. 環境変数 BASE_SAVE_PATH を設定"
     )
     sys.exit(1)
-
-
-def _parse_save_path(save_path: str, source: str) -> str | None:
-    """保存先パス文字列を解釈してローカルパスを返す。解決できなければ None。"""
-    if save_path.startswith("https://"):
-        local = drive_url_to_local_path(save_path)
-        if local:
-            return local
-        log.warning(
-            f"Google DriveのURLからローカルパスを自動変換できませんでした（{source}）\n"
-            f"  URL: {save_path}"
-        )
-        return None
-    elif Path(save_path).is_absolute():
-        log.info(f"保存先を取得（{source}）: {save_path}")
-        return save_path
-    return None
 
 
 def parse_pdf_types(raw: str) -> set[str]:
@@ -287,7 +336,7 @@ def ask_security_code(phone_number: str) -> str | None:
         log.info(f"  非インタラクティブ環境を検出。ファイルの出現を待機中...")
         log.info(f"  別ターミナルで: echo '123' > /tmp/softbank_security_code.txt")
 
-    # ファイルのポーリング (最大180秒)
+    # ファイルのポーリング (最大SECURITY_CODE_TIMEOUT秒)
     deadline = time.time() + SECURITY_CODE_TIMEOUT
     last_log = time.time()
     while time.time() < deadline:
@@ -333,13 +382,17 @@ def _save_debug_screenshot(
     page, save_dir: Path, phone: str, year: str, month: str,
     error_type: str, error_detail: str,
 ) -> None:
-    """デバッグ用スクリーンショットを {base_path}/debug/ に保存する。
-    base_path は save_dir の3階層上（save_dir = base_path/YYYY/MM/SoftBank）。
-    ファイル名にエラー種別を含め、詳細をテキストファイルにも記録する。
+    """デバッグ用スクリーンショットをローカルに保存する。
+    Drive APIモード時はスクリプトの隣の debug/ フォルダに保存。
+    ローカルモード時は save_dir の3階層上の debug/ フォルダに保存。
     """
     try:
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_path = save_dir.parent.parent.parent  # base_path/YYYY/MM/SoftBank → base_path
+        if _drive_ctx is not None:
+            # Drive APIモード: スクリプトと同じディレクトリの debug/ に保存
+            base_path = Path(__file__).parent
+        else:
+            base_path = save_dir.parent.parent.parent  # base_path/YYYY/MM/SoftBank → base_path
         debug_dir = base_path / "debug" / f"debug_{now}"
         debug_dir.mkdir(parents=True, exist_ok=True)
 
@@ -370,12 +423,13 @@ def _save_debug_screenshot(
         pass
 
 
-CARRIER_NAME = "SoftBank"
-
-
 def ensure_save_dir(base_path: str, year: str, month: str) -> Path:
     """保存先ディレクトリを作成して返す (base_path/year/month/キャリア名)"""
-    save_dir = Path(base_path) / year / month / CARRIER_NAME
+    if base_path.startswith("drive://") and _temp_save_dir is not None:
+        # Drive APIモード: 一時ディレクトリ内に同一構造を作成
+        save_dir = _temp_save_dir / year / month / CARRIER_NAME
+    else:
+        save_dir = Path(base_path) / year / month / CARRIER_NAME
     save_dir.mkdir(parents=True, exist_ok=True)
     return save_dir
 
@@ -383,7 +437,12 @@ def ensure_save_dir(base_path: str, year: str, month: str) -> Path:
 # ─── メイン処理 ──────────────────────────────────────────
 
 def check_already_downloaded(save_dir: Path, year: str, month: str, phone: str) -> bool:
-    """指定の電話番号・月のPDFが既にダウンロード済みかチェックする"""
+    """指定の電話番号・月のPDFが既にダウンロード済み（またはアップロード済み）かチェックする"""
+    if _drive_ctx is not None:
+        # Drive APIモード: Drive上で確認
+        folder_id = _drive_ctx.get_folder_id(year, month)
+        return _drive_ctx.file_exists(folder_id, year, month, phone)
+    # ローカル保存モード
     pattern = f"{year}{month}_SoftBank_{phone}_*.pdf"
     existing = list(save_dir.glob(pattern))
     if existing:
@@ -922,7 +981,7 @@ def select_target_month(page, year: str, month: str) -> bool:
 
 def _download_single_pdf(page, link, label: str, save_dir: Path,
                           year: str, month: str, phone: str, amount: str) -> bool:
-    """PDFリンクを1件ダウンロードして保存する。成功時True。"""
+    """PDFリンクを1件ダウンロードして保存（またはDriveにアップロード）する。成功時True。"""
     try:
         link_text = link.text_content() or ""
         href = link.get_attribute("href") or ""
@@ -937,6 +996,17 @@ def _download_single_pdf(page, link, label: str, save_dir: Path,
             stem = dest.stem
             dest = save_dir / f"{stem}_{label}.pdf"
         download.save_as(str(dest))
+
+        if _drive_ctx is not None:
+            # Drive APIモード: アップロード後にローカル一時ファイルを削除
+            folder_id = _drive_ctx.get_folder_id(year, month)
+            ok = _drive_ctx.upload(dest, folder_id)
+            try:
+                dest.unlink()
+            except Exception:
+                pass
+            return ok
+
         log.info(f"  [{label}] 保存完了: {dest}")
         return True
     except Exception as e:
@@ -1123,10 +1193,11 @@ def main():
             log.warning(f"設定シートから対象月の取得に失敗: {e}")
     log.info(f"対象月: {year}年{month}月")
 
-    # 保存先の決定（スプレッドシート設定シート → 環境変数の順に探す）
+    # 保存先の決定（Drive APIモード or ローカルモード）
     base_path = resolve_save_path()
     save_dir = ensure_save_dir(base_path, year, month)
-    log.info(f"保存先: {save_dir}")
+    mode_label = "Drive APIモード" if _drive_ctx else "ローカルモード"
+    log.info(f"保存先: {save_dir} ({mode_label})")
 
     # アカウント情報の読み込み
     accounts = load_accounts()
@@ -1151,6 +1222,14 @@ def main():
     succeeded = sum(1 for _, ok in results if ok)
     log.info(f"  合計: {succeeded}/{len(results)} 件成功")
     log.info("=" * 50)
+
+    # Drive APIモード: 一時ディレクトリのクリーンアップ
+    if _temp_save_dir is not None and _temp_save_dir.exists():
+        try:
+            shutil.rmtree(str(_temp_save_dir))
+            log.info(f"一時ディレクトリを削除しました: {_temp_save_dir}")
+        except Exception as e:
+            log.warning(f"一時ディレクトリの削除に失敗: {e}")
 
     failed = [p for p, ok in results if not ok]
     if failed:
