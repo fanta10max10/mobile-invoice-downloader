@@ -298,12 +298,13 @@ def load_accounts() -> pd.DataFrame:
     return df
 
 
-CODE_FILE = Path("/tmp/softbank_security_code.txt")
+_TMPDIR = Path(tempfile.gettempdir())
+CODE_FILE = _TMPDIR / "softbank_security_code.txt"
 
 
 def _session_file(phone_number: str) -> Path:
     """電話番号ごとに独立したセッションファイルパスを返す（アカウント干渉防止）"""
-    return Path(f"/tmp/softbank_session_{phone_number}.json")
+    return _TMPDIR / f"softbank_session_{phone_number}.json"
 
 
 def ask_security_code(phone_number: str) -> str | None:
@@ -319,7 +320,7 @@ def ask_security_code(phone_number: str) -> str | None:
     print(f"  📱 【{phone_number}】")
     print(f"  SMSに届いた3桁のセキュリティ番号を入力してください")
     print(f"  ターミナル入力 または 以下のコマンドで渡してください:")
-    print(f"    echo '123' > /tmp/softbank_security_code.txt")
+    print(f"    echo '123' > {CODE_FILE}")
     print("=" * 60)
 
     import sys
@@ -334,7 +335,7 @@ def ask_security_code(phone_number: str) -> str | None:
     else:
         # 非インタラクティブ環境 (Bashツール等): ファイルをポーリング
         log.info(f"  非インタラクティブ環境を検出。ファイルの出現を待機中...")
-        log.info(f"  別ターミナルで: echo '123' > /tmp/softbank_security_code.txt")
+        log.info(f"  別ターミナルで: echo '123' > {CODE_FILE}")
 
     # ファイルのポーリング (最大SECURITY_CODE_TIMEOUT秒)
     deadline = time.time() + SECURITY_CODE_TIMEOUT
