@@ -164,9 +164,10 @@ function setupSettingsSheet_(ss) {
   _upsertSettingRow_(sheet, "PDF保存先フォルダ",
     "https://drive.google.com/drive/folders/XXXXXXXX",
     "PDFの保存先フォルダ。以下どちらでも可:\n" +
-    "・Google DriveのフォルダURL（https://drive.google.com/drive/folders/...）\n" +
-    "  → drive_path_map.txt でローカルパスに変換される\n" +
-    "・Macのローカル絶対パス（/Users/...）"
+    "・Google DriveのフォルダURL（推奨）\n" +
+    "  https://drive.google.com/drive/folders/...\n" +
+    "  → Drive APIで直接アップロード（要: サービスアカウントを編集者として共有）\n" +
+    "・ローカル絶対パス（/Users/... または C:\\...）"
   );
   _upsertSettingRow_(sheet, "対象月",
     "自動（前月）",

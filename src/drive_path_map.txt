@@ -1,5 +1,0 @@
-# Google Drive フォルダID → ローカルパスのマッピング
-# 形式: フォルダID=ローカルパス
-# スプレッドシートにGoogle DriveのURLを書いた場合、ここで対応するMac上のパスを指定する
-1WEVnVT1KSgYAuAGMNAOy0VEL0VwwXplF=/Users/yamamotoair/Library/CloudStorage/GoogleDrive-fanta10max10@epg.jp/マイドライブ/確定申告系/携帯領収書管理
-1BWSBoYxzM8a21s8jW3KnZiqYN9jV_6du=/Users/yamamotoair/Library/CloudStorage/GoogleDrive-fanta10max10@epg.jp/マイドライブ/確定申告系/携帯領収書管理

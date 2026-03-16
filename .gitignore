@@ -8,6 +8,7 @@ __pycache__/
 *.pyc
 *.pyo
 .python-version
+.venv/
 
 # macOS
 .DS_Store

@@ -1,6 +1,6 @@
 # My SoftBank 料金明細PDF自動ダウンロード
 
-My SoftBankにログインしてその月の請求書PDFを自動でダウンロードするスクリプト。
+My SoftBankにログインしてその月の請求書PDFを自動でダウンロードし、Google Driveに直接アップロードするスクリプト。
 
 ---
 
@@ -9,16 +9,20 @@ My SoftBankにログインしてその月の請求書PDFを自動でダウンロ
 ### 1. 依存ライブラリのインストール
 
 ```bash
-pip3 install -r requirements.txt
+# 仮想環境を作成（推奨）
+python3 -m venv ../.venv
+source ../.venv/bin/activate  # Windows: ..\\.venv\\Scripts\\activate
+
+pip install -r requirements.txt
 playwright install chromium
 ```
 
 ### 2. GCPサービスアカウントの準備
 
-スプレッドシートへのアクセスにサービスアカウント認証を使用する。
+スプレッドシートとDrive APIへのアクセスにサービスアカウント認証を使用する。
 
 1. [Google Cloud Console](https://console.cloud.google.com/) でプロジェクトを作成
-2. Google Sheets API を有効化
+2. Google Sheets API と Google Drive API を有効化
 3. サービスアカウントを作成してJSONキーをダウンロード
 4. ダウンロードしたJSONを `src/service_account.json` として配置
 5. スプレッドシートをそのサービスアカウントのメールアドレスに「閲覧者」として共有
@@ -40,14 +44,12 @@ playwright install chromium
 | PDF保存先フォルダ | `https://drive.google.com/drive/folders/XXXXXXXX` |
 | 対象月 | ドロップダウンで選択（「自動（前月）」= 前月を自動選択） |
 
-### 4. 保存先フォルダIDのマッピング
+### 4. PDF保存先フォルダをサービスアカウントと共有
 
-設定シートの `PDF保存先フォルダ` にGoogle DriveのURLを入力している場合、`drive_path_map.txt` にフォルダIDとMac上のローカルパスの対応を書く：
+設定シートに入力したGoogle Driveフォルダをサービスアカウントのメールアドレスと共有する：
 
-```
-フォルダID=ローカルパス
-1WEVnVT1KSgYAuAGMNAOy0VEL0VwwXplF=/Users/yamamoto/.../確定申告系/携帯領収書管理
-```
+1. `service_account.json` 内の `client_email` を確認
+2. Google Driveで対象フォルダを開き「共有」→ そのメールアドレスを追加（権限: **編集者**）
 
 ### 5. 環境変数の設定
 
@@ -84,7 +86,11 @@ HEADLESS=false python3 mysoftbank_billing.py
 ログイン時にSMSで3桁のセキュリティ番号が届く。スクリプトが待機状態になったら入力する：
 
 ```bash
+# macOS / Linux
 echo '123' > /tmp/softbank_security_code.txt
+
+# Windows
+echo 123 > %TEMP%\softbank_security_code.txt
 ```
 
 （`123` の部分をSMSで届いた番号に変える）
@@ -93,7 +99,7 @@ echo '123' > /tmp/softbank_security_code.txt
 
 ### セッションの再利用
 
-認証成功後、セッション情報が `/tmp/softbank_session_{電話番号}.json` に保存される（アカウントごとに独立）。次回実行時にセッションが有効であれば、SMS認証がスキップされる。セッションは `/tmp/` に保存されるためMacを再起動すると消える。
+認証成功後、セッション情報がOSの一時フォルダ（macOS: `/tmp/`、Windows: `%TEMP%`）にアカウントごとに保存される。次回実行時にセッションが有効であれば、SMS認証がスキップされる。OSを再起動すると一時フォルダが消えてセッションもリセットされる。
 
 ---
 
@@ -101,20 +107,16 @@ echo '123' > /tmp/softbank_security_code.txt
 
 ```
 携帯領収書管理/
+├── .venv/                        # Python仮想環境（gitignore対象）
 ├── src/
 │   ├── mysoftbank_billing.py     # メインスクリプト
 │   ├── setup_spreadsheet.gs      # スプレッドシート初期設定用GAS
 │   ├── service_account.json      # GCPサービスアカウントキー（機密・gitignore対象）
-│   ├── drive_path_map.txt        # Google DriveフォルダID → ローカルパス対応
 │   ├── requirements.txt          # Python依存ライブラリ
 │   ├── env.example               # 環境変数サンプル
 │   ├── .env                      # 環境変数（機密・gitignore対象）
 │   ├── README.md                 # このファイル
 │   └── 仕様書.md                  # 技術仕様書
-├── 2026/
-│   └── 02/
-│       └── SoftBank/
-│           └── 202602_SoftBank_090XXXXXXXX_8500円.pdf
 └── debug/
     └── debug_20260315_203000/
         ├── 090XXXXXXXX_202602_エラー種別.png
@@ -139,13 +141,13 @@ echo '123' > /tmp/softbank_security_code.txt
 ## トラブルシューティング
 
 **デバッグスクリーンショット**
-エラー時に `携帯領収書管理/debug/debug_{timestamp}/` に自動保存される。`HEADLESS=false` と組み合わせて原因を特定する。
+エラー時に `src/debug/debug_{timestamp}/` に自動保存される。`HEADLESS=false` と組み合わせて原因を特定する。
 
 **セキュリティ番号がタイムアウトした**
 コードの有効期限切れの可能性がある。スクリプトを再起動してSMSを再送する。`SECURITY_CODE_TIMEOUT` を延ばしても根本解決にはならない（SMSコード自体の有効期限の問題）。
 
 **ファイル名が `_利用料金明細.pdf` のままで金額が入らない**
-GAS の「PDFから金額を取得・ファイル名更新」を実行する。Google ドライブへの同期が完了していない場合はしばらく待ってから再実行する。
+GAS の「PDFから金額を取得・ファイル名更新」を実行する。Drive APIへのアップロード直後は反映に数秒かかる場合があるのでしばらく待ってから再実行する。
 
 **「PDFから金額を取得・ファイル名更新」で `Drive is not defined` エラー**
 GAS エディタで「サービス」→「Drive API」を追加していない。Apps Script の「サービスを追加」から Drive API (v2) を有効にする。
