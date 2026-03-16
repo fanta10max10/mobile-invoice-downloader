@@ -83,17 +83,7 @@ HEADLESS=false python3 mysoftbank_billing.py
 
 ## セキュリティ番号（SMS）の入力
 
-ログイン時にSMSで3桁のセキュリティ番号が届く。スクリプトが待機状態になったら入力する：
-
-```bash
-# macOS / Linux
-echo '123' > /tmp/softbank_security_code.txt
-
-# Windows
-echo 123 > %TEMP%\softbank_security_code.txt
-```
-
-（`123` の部分をSMSで届いた番号に変える）
+ログイン時にSMSで3桁のセキュリティ番号が届く。スクリプトが待機状態になったらそのままターミナルに入力してEnterを押す。
 
 入力を待機する時間は `SECURITY_CODE_TIMEOUT`（デフォルト300秒）で変更可能。
 
