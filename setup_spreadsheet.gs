@@ -399,10 +399,15 @@ function _getPhoneManagerHtml_() {
 // ── サーバー側: サイドバーAPI ──
 
 function getPhoneManagerData() {
-  return {
-    phones: _getAllPhonesFromMonthSheets_(),
-    selections: _getCurrentSelections_(),
-  };
+  try {
+    return {
+      phones: _getAllPhonesFromMonthSheets_(),
+      selections: _getCurrentSelections_(),
+    };
+  } catch (e) {
+    Logger.log(`[getPhoneManagerData] エラー: ${e.message}\n${e.stack}`);
+    throw new Error(`データ読み込みに失敗: ${e.message}`);
+  }
 }
 
 
@@ -412,91 +417,85 @@ function getPhoneManagerData() {
  * 解約済の番号は自動的に除外される。
  */
 function savePhoneSelections(selections) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const allPhones = _getAllPhonesFromMonthSheets_();
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const allPhones = _getAllPhonesFromMonthSheets_();
 
-  // 解約済番号セットを作成
-  const cancelledSet = new Set();
-  for (const carrier of ["SoftBank", "Ymobile"]) {
-    for (const p of (allPhones[carrier] || [])) {
-      if (p.cancelled) cancelledSet.add(p.phone);
-    }
-  }
-
-  // 運用端末・名義マップ
-  const deviceMap = {}, nameMap = {};
-  for (const carrier of ["SoftBank", "Ymobile"]) {
-    for (const p of (allPhones[carrier] || [])) {
-      if (p.device) deviceMap[p.phone] = p.device;
-      if (p.name) nameMap[p.phone] = p.name;
-    }
-  }
-
-  // ── 認証情報シート ──
-  let authSheet = ss.getSheetByName(AUTH_SHEET_NAME);
-  if (!authSheet) {
-    authSheet = ss.insertSheet(AUTH_SHEET_NAME);
-    setupAuthSheet_(ss);
-  }
-
-  if (authSheet.getLastRow() > 1) {
-    authSheet.getRange(2, 1, authSheet.getLastRow() - 1, authSheet.getLastColumn()).clearContent();
-    authSheet.getRange(2, 1, authSheet.getLastRow() - 1, authSheet.getLastColumn())
-      .setFontLine("none").setFontColor("#000000").setBackground(null);
-  }
-
-  // キャリア→電話番号情報マップ（解約済含む全番号）
-  const carrierPhoneMap = {};
-  for (const carrier of ["SoftBank", "Ymobile"]) {
-    for (const p of (allPhones[carrier] || [])) {
-      carrierPhoneMap[p.phone] = { carrier, ...p };
-    }
-  }
-
-  // 選択中の番号（解約済除外）+ 解約済番号を分けて書き込む
-  const activeRows = [];
-  const cancelledRows = [];
-  const linkData = { SoftBank: [], Ymobile: [] };
-
-  for (const carrier of ["SoftBank", "Ymobile"]) {
-    const sel = selections[carrier] || {};
-    for (const phone of Object.keys(sel)) {
-      if (cancelledSet.has(phone)) continue;
-      const pdfType = sel[phone].pdfType || "電話番号別";
-      activeRows.push([phone, carrier, pdfType, deviceMap[phone] || "", ""]);
-      linkData[carrier].push({ phone, name: nameMap[phone] || "" });
-    }
-  }
-
-  // 解約済回線を末尾にまとめて追加（視覚的に区別）
-  for (const carrier of ["SoftBank", "Ymobile"]) {
-    for (const p of (allPhones[carrier] || [])) {
-      if (p.cancelled) {
-        cancelledRows.push([p.phone, carrier, "", p.device || "", "解約済"]);
+    // 解約済番号セット・運用端末・名義マップ
+    const cancelledSet = new Set();
+    const deviceMap = {}, nameMap = {};
+    for (const carrier of ["SoftBank", "Ymobile"]) {
+      for (const p of (allPhones[carrier] || [])) {
+        if (p.cancelled) cancelledSet.add(p.phone);
+        if (p.device) deviceMap[p.phone] = p.device;
+        if (p.name) nameMap[p.phone] = p.name;
       }
     }
+
+    // ── 認証情報シート ──
+    let authSheet = ss.getSheetByName(AUTH_SHEET_NAME);
+    if (!authSheet) {
+      authSheet = ss.insertSheet(AUTH_SHEET_NAME);
+      setupAuthSheet_(ss);
+    }
+
+    // 既存データを全クリア（ヘッダー行以外）
+    const lastRow = authSheet.getLastRow();
+    const lastCol = Math.max(authSheet.getLastColumn(), 5);
+    if (lastRow > 1) {
+      const clearRange = authSheet.getRange(2, 1, lastRow - 1, lastCol);
+      clearRange.clearContent();
+      clearRange.clearFormat();
+    }
+
+    // 選択中の番号（解約済除外）
+    const activeRows = [];
+    const cancelledRows = [];
+    const linkData = { SoftBank: [], Ymobile: [] };
+
+    for (const carrier of ["SoftBank", "Ymobile"]) {
+      const sel = selections[carrier] || {};
+      for (const phone of Object.keys(sel)) {
+        if (cancelledSet.has(phone)) continue;
+        const pdfType = sel[phone].pdfType || "電話番号別";
+        activeRows.push([phone, carrier, pdfType, deviceMap[phone] || "", ""]);
+        linkData[carrier].push({ phone, name: nameMap[phone] || "" });
+      }
+    }
+
+    // 解約済回線を末尾に追加
+    for (const carrier of ["SoftBank", "Ymobile"]) {
+      for (const p of (allPhones[carrier] || [])) {
+        if (p.cancelled) {
+          cancelledRows.push([p.phone, carrier, "", p.device || "", "解約済"]);
+        }
+      }
+    }
+
+    const allRows = [...activeRows, ...cancelledRows];
+    if (allRows.length > 0) {
+      authSheet.getRange(2, 1, allRows.length, 5).setValues(allRows);
+    }
+    authSheet.getRange("A:A").setNumberFormat("@");
+
+    // 解約済行をグレーアウト+取り消し線
+    if (cancelledRows.length > 0) {
+      const startRow = activeRows.length + 2;
+      authSheet.getRange(startRow, 1, cancelledRows.length, 5)
+        .setFontLine("line-through").setFontColor("#999999").setBackground("#f0f0f0");
+    }
+
+    // ── リンクシートの電話番号を同期 ──
+    _syncLinkSheetPhones_(ss, SOFTBANK_LINK_SHEET_NAME, linkData.SoftBank);
+    _syncLinkSheetPhones_(ss, YMOBILE_LINK_SHEET_NAME, linkData.Ymobile);
+
+    let msg = `保存しました（有効${activeRows.length}件）。`;
+    if (cancelledRows.length > 0) msg += `\n解約済${cancelledRows.length}件をグレー表示で記録。`;
+    return msg;
+  } catch (e) {
+    Logger.log(`[savePhoneSelections] エラー: ${e.message}\n${e.stack}`);
+    throw new Error(`保存に失敗しました: ${e.message}`);
   }
-
-  const allRows = [...activeRows, ...cancelledRows];
-  if (allRows.length > 0) {
-    authSheet.getRange(2, 1, allRows.length, 5).setValues(allRows);
-  }
-  authSheet.getRange("A:A").setNumberFormat("@");
-
-  // 解約済行をグレーアウト+取り消し線
-  if (cancelledRows.length > 0) {
-    const startRow = activeRows.length + 2; // 1-indexed, ヘッダー行分+1
-    const cancelledRange = authSheet.getRange(startRow, 1, cancelledRows.length, 5);
-    cancelledRange.setFontLine("line-through").setFontColor("#999999").setBackground("#f0f0f0");
-  }
-
-  // ── リンクシートの電話番号を同期（解約済は含めない）──
-  _syncLinkSheetPhones_(ss, SOFTBANK_LINK_SHEET_NAME, linkData.SoftBank);
-  _syncLinkSheetPhones_(ss, YMOBILE_LINK_SHEET_NAME, linkData.Ymobile);
-
-  let msg = `保存しました（有効${activeRows.length}件）。`;
-  if (cancelledRows.length > 0) msg += `\n解約済${cancelledRows.length}件をグレー表示で記録。`;
-  return msg;
 }
 
 
@@ -505,41 +504,53 @@ function savePhoneSelections(selections) {
  * 既存のリンク（月列のデータ）は保持しつつ、電話番号行の追加・削除を行う。
  */
 function _syncLinkSheetPhones_(ss, sheetName, phoneList) {
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) return;
+  try {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return;
+    if (phoneList.length === 0) return;
 
-  // 現在のリンクシートの電話番号を取得
-  const data = sheet.getDataRange().getValues();
-  const existingPhones = {};
-  for (let i = 1; i < data.length; i++) {
-    const phone = String(data[i][0] || "").replace(/[-\s]/g, "").trim();
-    if (phone) existingPhones[phone] = i + 1; // 行番号
-  }
+    const targetPhones = new Set(phoneList.map(p => p.phone));
+    const nameByPhone = {};
+    for (const p of phoneList) nameByPhone[p.phone] = p.name || "";
 
-  const targetPhones = new Set(phoneList.map(p => p.phone));
-
-  // 不要な行を削除（降順で削除して行番号ズレを防ぐ）
-  const toDelete = Object.entries(existingPhones)
-    .filter(([ph]) => !targetPhones.has(ph))
-    .sort((a, b) => b[1] - a[1]);
-  for (const [, rowNum] of toDelete) {
-    sheet.deleteRow(rowNum);
-  }
-
-  // 追加が必要な番号 + 既存行の名義更新
-  const currentPhones = new Set(Object.keys(existingPhones).filter(ph => targetPhones.has(ph)));
-  const nameByPhone = {};
-  for (const p of phoneList) nameByPhone[p.phone] = p.name || "";
-
-  for (const { phone, name } of phoneList) {
-    if (!currentPhones.has(phone)) {
-      const newRow = sheet.getLastRow() + 1;
-      sheet.getRange(newRow, 1).setNumberFormat("@").setValue(phone);
-      sheet.getRange(newRow, 2).setValue(name);
-    } else {
-      // 既存行の名義を更新
-      sheet.getRange(existingPhones[phone], 2).setValue(name);
+    // 現在のリンクシートの電話番号を取得
+    const data = sheet.getDataRange().getValues();
+    const existingPhones = {};
+    for (let i = 1; i < data.length; i++) {
+      const phone = String(data[i][0] || "").replace(/[-\s]/g, "").trim();
+      if (phone) existingPhones[phone] = i + 1;
     }
+
+    // 不要な行を削除（降順で削除して行番号ズレを防ぐ）
+    const toDelete = Object.entries(existingPhones)
+      .filter(([ph]) => !targetPhones.has(ph))
+      .sort((a, b) => b[1] - a[1]);
+    for (const [, rowNum] of toDelete) {
+      if (rowNum <= sheet.getLastRow()) {
+        sheet.deleteRow(rowNum);
+      }
+    }
+
+    // 削除後にリフレッシュ（行番号が変わるので再取得）
+    const refreshedData = sheet.getDataRange().getValues();
+    const refreshedPhones = {};
+    for (let i = 1; i < refreshedData.length; i++) {
+      const phone = String(refreshedData[i][0] || "").replace(/[-\s]/g, "").trim();
+      if (phone) refreshedPhones[phone] = i + 1;
+    }
+
+    // 追加・名義更新
+    for (const { phone, name } of phoneList) {
+      if (refreshedPhones[phone]) {
+        sheet.getRange(refreshedPhones[phone], 2).setValue(name);
+      } else {
+        const newRow = sheet.getLastRow() + 1;
+        sheet.getRange(newRow, 1).setNumberFormat("@").setValue(phone);
+        sheet.getRange(newRow, 2).setValue(name);
+      }
+    }
+  } catch (e) {
+    Logger.log(`[_syncLinkSheetPhones_] ${sheetName} エラー: ${e.message}`);
   }
 }
 
