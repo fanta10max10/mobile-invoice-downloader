@@ -455,142 +455,6 @@ def parse_pdf_types(raw: str) -> set[str]:
     return result
 
 
-def _normalize_carrier_name(text: str) -> "str | None":
-    """キャリアラベルを正規化する。「ソフトバンク」→ "SoftBank" 等。"""
-    s = text.strip().lower()
-    if not s:
-        return None
-    if s == "softbank" or "ソフトバンク" in s:
-        return "SoftBank"
-    if s in ("ymobile", "y!mobile") or "ワイモバイル" in s:
-        return "Ymobile"
-    return None
-
-
-def _open_management_sheet(gc, main_sh):
-    """回線管理スプレッドシートを開く。設定シートにURLがあれば外部スプシ、なければ自身を返す。"""
-    try:
-        ws = main_sh.worksheet("設定")
-        for row in ws.get_all_records():
-            if str(row.get("設定名", "")).strip() == "回線管理スプレッドシート":
-                url = str(row.get("値", "")).strip()
-                if url:
-                    m = re.search(r'/spreadsheets/d/([a-zA-Z0-9_-]+)', url)
-                    if m:
-                        log.info(f"  外部回線管理スプレッドシートを参照: {m.group(1)}")
-                        return gc.open_by_key(m.group(1))
-    except Exception:
-        pass
-    return main_sh
-
-
-def load_active_phones_from_management() -> "set[str] | None":
-    """
-    回線管理スプレッドシートの月別シートから、契約中（解約済=FALSE）の
-    CARRIER_NAME の電話番号セットを返す。
-
-    対象シート: TARGET_MONTH の月番号に一致するシート（例: "2月"）。
-    見つからなければ月シートの最終シートを使用。
-    月シートが存在しない場合は None を返す（フィルタ無効）。
-
-    月別シートはキャリアごとにセクション分けされた構造に対応:
-      ワイモバイル        ← セクションラベル行
-      電話番号 | 解約済   ← ヘッダー行
-      080-xxxx | FALSE   ← データ行
-
-    副作用: _phone_device_map に 電話番号→運用端末 のマッピングを格納する。
-    """
-    global _phone_device_map
-    _phone_device_map = {}
-
-    try:
-        gc = get_gspread_client()
-        main_sh = _open_sheet(gc)
-        mgmt_sh = _open_management_sheet(gc, main_sh)
-        worksheets = mgmt_sh.worksheets()
-
-        # TARGET_MONTH に対応する月シートを探す（"2月" 等。末尾一致で "(2025)12月" にも対応）
-        target_ws = None
-        if TARGET_MONTH and len(TARGET_MONTH) >= 6:
-            try:
-                month_str = f"{int(TARGET_MONTH[4:6])}月"
-                matched = [ws for ws in worksheets if ws.title.endswith(month_str)]
-                if matched:
-                    target_ws = matched[-1]
-            except ValueError:
-                pass
-        if target_ws is None:
-            # 月シートを探す（タイトルが "N月" or "(YYYY)N月" の形式）
-            month_sheets = [ws for ws in worksheets if re.match(r".*\d+月$", ws.title)]
-            if not month_sheets:
-                return None  # 月シートなし → フィルタ無効
-            target_ws = month_sheets[-1]
-
-        log.info(f"電話番号管理シート '{target_ws.title}' を参照して契約中番号をフィルタリング")
-        rows = target_ws.get_all_values()
-
-        active_phones: set[str] = set()
-        current_cols: dict[str, int] = {}
-        section_carrier: str | None = None  # セクションラベルから検出したキャリア
-
-        for row in rows:
-            # セクションラベル行の検出（非空セルが少なくキャリア名を含む行）
-            non_empty = [c for c in row if str(c).strip()]
-            if 0 < len(non_empty) <= 3 and "電話番号" not in non_empty:
-                for cell in non_empty:
-                    label_carrier = _normalize_carrier_name(str(cell))
-                    if label_carrier:
-                        section_carrier = label_carrier
-                        current_cols = {}  # 次のヘッダー行を待つ
-                        break
-                if section_carrier:
-                    continue
-
-            # ヘッダー行を検出（電話番号列がある行）
-            if "電話番号" in row:
-                current_cols = {cell: j for j, cell in enumerate(row) if cell}
-                continue
-            if not current_cols:
-                continue
-
-            phone_col = current_cols.get("電話番号")
-            cancelled_col = current_cols.get("解約済")
-            carrier_col = current_cols.get("キャリア")
-            device_col = current_cols.get("運用端末")
-
-            if phone_col is None:
-                continue
-
-            phone = row[phone_col] if phone_col < len(row) else ""
-            cancelled = row[cancelled_col] if (cancelled_col is not None and cancelled_col < len(row)) else ""
-            device = row[device_col] if (device_col is not None and device_col < len(row)) else ""
-
-            # キャリア判定: キャリア列 → セクションラベル
-            carrier = ""
-            if carrier_col is not None and carrier_col < len(row):
-                carrier = _normalize_carrier_name(str(row[carrier_col])) or ""
-            if not carrier:
-                carrier = section_carrier or ""
-
-            phone_clean = strip_hyphens(phone)
-            if not re.match(r'^\d{10,13}$', phone_clean):
-                continue  # 合計行・空行などをスキップ
-            if cancelled_col is not None and cancelled.upper() == "TRUE":
-                continue
-            if carrier != CARRIER_NAME:
-                continue
-
-            active_phones.add(phone_clean)
-            if device:
-                _phone_device_map[phone_clean] = device
-
-        log.info(f"  契約中 {CARRIER_NAME} 番号: {len(active_phones)} 件")
-        return active_phones
-    except Exception as e:
-        log.warning(f"電話番号管理シートの読み込みに失敗しました（フィルタを無効化）: {e}")
-        return None
-
-
 def _load_password_from_settings(sh) -> "str | None":
     """設定シートから共通パスワードを取得する。"""
     try:
@@ -621,6 +485,7 @@ def load_accounts() -> pd.DataFrame:
 
     # 「認証情報」シートを優先（統合スプシ用）
     df: "pd.DataFrame | None" = None
+    df_all: "pd.DataFrame | None" = None
     try:
         ws = sh.worksheet("認証情報")
         records = ws.get_all_records()
@@ -646,7 +511,7 @@ def load_accounts() -> pd.DataFrame:
         log.error(f"スプレッドシートに「電話番号」カラムがありません。現在のカラム: {list(df.columns)}")
         sys.exit(1)
 
-    # パスワード: 設定シートの共通パスワード → 認証情報シートのパスワード列 → エラー
+    # パスワード: 設定シート共通パスワード → 認証情報シートのパスワード列 → エラー
     if common_password:
         df["パスワード"] = common_password
     elif "パスワード" not in df.columns:
@@ -655,20 +520,23 @@ def load_accounts() -> pd.DataFrame:
             "  設定シートの「パスワード」行にログインパスワードを入力してください。"
         )
         sys.exit(1)
-
     df["電話番号"] = df["電話番号"].astype(str).apply(strip_hyphens)
     if "PDFの種類" not in df.columns:
         df["PDFの種類"] = "電話番号別"
     log.info(f"  {len(df)} 件のアカウントを読み込みました")
 
-    # 同スプシの月シートでフィルタリング（解約済除外）
-    active_phones = load_active_phones_from_management()
-    if active_phones is not None:
-        before = len(df)
-        df = df[df["電話番号"].isin(active_phones)].reset_index(drop=True)
-        skipped = before - len(df)
-        if skipped > 0:
-            log.info(f"  管理シートフィルタ: {skipped} 件をスキップ（解約済または管理シート未登録）")
+    # 認証情報シートの「運用端末」列から _phone_device_map を構築
+    # （GASが回線管理表から自動同期した値をそのまま使用）
+    global _phone_device_map
+    _phone_device_map = {}
+    if df_all is not None and "運用端末" in df_all.columns:
+        for _, row in df_all.iterrows():
+            phone = strip_hyphens(str(row.get("電話番号", "")))
+            device = str(row.get("運用端末", "")).strip()
+            if re.match(r'^\d{10,13}$', phone) and device:
+                _phone_device_map[phone] = device
+        if _phone_device_map:
+            log.info(f"  運用端末マップ: {len(_phone_device_map)} 件")
 
     return df
 

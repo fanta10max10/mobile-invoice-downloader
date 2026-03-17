@@ -149,8 +149,9 @@ function setupSettingsSheet_(ss) {
 
 /**
  * 認証情報シートを作成・初期化する（内部用）
- * 列: 電話番号 | キャリア | PDFの種類
- * パスワードは設定シートで一元管理するため、このシートには含まない。
+ * 列: 電話番号 | パスワード | キャリア | PDFの種類 | 運用端末
+ * パスワードは設定シートの共通パスワードが優先されるが、
+ * 個別設定が必要な場合はこの列にも入力可能。
  */
 function setupAuthSheet_(ss) {
   let sheet = ss.getSheetByName(AUTH_SHEET_NAME);
@@ -160,16 +161,9 @@ function setupAuthSheet_(ss) {
     ss.moveActiveSheet(2);
   }
 
-  // 旧形式（パスワード列あり）からの移行
-  const currentHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  const pwColIdx = currentHeaders.findIndex(h => String(h).trim() === "パスワード");
-  if (pwColIdx !== -1) {
-    sheet.deleteColumn(pwColIdx + 1);
-  }
-
   // ヘッダー行（空の場合のみ書き込む）
   if (!sheet.getRange(1, 1).getValue()) {
-    const headers = ["電話番号", "キャリア", "PDFの種類"];
+    const headers = ["電話番号", "パスワード", "キャリア", "PDFの種類", "運用端末"];
     const headerRange = sheet.getRange(1, 1, 1, headers.length);
     headerRange.setValues([headers]);
     headerRange
@@ -180,21 +174,25 @@ function setupAuthSheet_(ss) {
   }
 
   sheet.setColumnWidth(1, 180);  // 電話番号
-  sheet.setColumnWidth(2, 120);  // キャリア
-  sheet.setColumnWidth(3, 220);  // PDFの種類
+  sheet.setColumnWidth(2, 220);  // パスワード
+  sheet.setColumnWidth(3, 120);  // キャリア
+  sheet.setColumnWidth(4, 220);  // PDFの種類
+  sheet.setColumnWidth(5, 160);  // 運用端末
 
   // 電話番号列を書式なしテキストに（先頭0が消えないように）
   sheet.getRange("A:A").setNumberFormat("@");
 
   // ツールチップ
   sheet.getRange("A1").setNote("電話番号。ハイフンOK（スクリプトが自動で除去）\nサイドバーから管理できます。");
-  sheet.getRange("B1").setNote("キャリア名（SoftBank または Ymobile）");
-  sheet.getRange("C1").setNote(
+  sheet.getRange("B1").setNote("ログインパスワード。\n空欄の場合は設定シートの共通パスワードが使用されます。");
+  sheet.getRange("C1").setNote("キャリア名（SoftBank / Ymobile 等）");
+  sheet.getRange("D1").setNote(
     "ダウンロードするPDFの種類（カンマ区切りで複数指定可）\n\n" +
     "電話番号別 … 電話番号別PDF（デフォルト）\n" +
     "一括       … 一括印刷用PDF\n" +
     "機種別     … 機種別PDF（SoftBankのみ）"
   );
+  sheet.getRange("E1").setNote("SMS認証時に表示される端末名（サイドバーから自動設定）");
 }
 
 
@@ -481,7 +479,7 @@ function savePhoneSelections(selections) {
 
   // ヘッダー確認
   if (!sheet.getRange(1, 1).getValue()) {
-    const headers = ["電話番号", "キャリア", "PDFの種類"];
+    const headers = ["電話番号", "パスワード", "キャリア", "PDFの種類", "運用端末"];
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(1, 1, 1, headers.length)
       .setFontWeight("bold")
@@ -490,9 +488,33 @@ function savePhoneSelections(selections) {
       .setHorizontalAlignment("center");
   }
 
-  // 既存データをクリア（ヘッダー行以外）
+  // 既存のパスワード情報を保持するために現在のデータを読み取る
+  const existingData = {};
   if (sheet.getLastRow() > 1) {
+    const data = sheet.getDataRange().getValues();
+    const headers = data[0].map(h => String(h).trim());
+    const phoneIdx = headers.indexOf("電話番号");
+    const pwIdx = headers.indexOf("パスワード");
+    const pdfIdx = headers.indexOf("PDFの種類");
+    for (let i = 1; i < data.length; i++) {
+      const phone = String(data[i][phoneIdx] || "").replace(/[-\s]/g, "").trim();
+      if (phone) {
+        existingData[phone] = {
+          password: pwIdx !== -1 ? String(data[i][pwIdx] || "") : "",
+          pdfType: pdfIdx !== -1 ? String(data[i][pdfIdx] || "") : "",
+        };
+      }
+    }
     sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
+  }
+
+  // 電話番号マスターから運用端末情報を取得
+  const allPhones = _getAllPhonesFromMonthSheets_();
+  const deviceMap = {};
+  for (const carrier of ["SoftBank", "Ymobile"]) {
+    for (const p of (allPhones[carrier] || [])) {
+      deviceMap[p.phone] = p.device || "";
+    }
   }
 
   // 選択されたデータを書き込む
@@ -500,12 +522,19 @@ function savePhoneSelections(selections) {
   for (const carrier of ["SoftBank", "Ymobile"]) {
     const carrierSel = selections[carrier] || {};
     for (const phone of Object.keys(carrierSel)) {
-      rows.push([phone, carrier, carrierSel[phone].pdfType || "電話番号別"]);
+      const existing = existingData[phone] || {};
+      rows.push([
+        phone,
+        existing.password || "",
+        carrier,
+        carrierSel[phone].pdfType || existing.pdfType || "電話番号別",
+        deviceMap[phone] || "",
+      ]);
     }
   }
 
   if (rows.length > 0) {
-    sheet.getRange(2, 1, rows.length, 3).setValues(rows);
+    sheet.getRange(2, 1, rows.length, 5).setValues(rows);
   }
 
   // 電話番号列をテキスト形式に
