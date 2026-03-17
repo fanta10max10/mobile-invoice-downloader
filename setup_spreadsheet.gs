@@ -28,6 +28,7 @@ const AUTH_SHEET_NAME = "認証情報";
 const SOFTBANK_LINK_SHEET_NAME = "SoftBankリンク";
 const YMOBILE_LINK_SHEET_NAME = "Ymobileリンク";
 
+const HISTORY_SHEET_NAME = "ダウンロード履歴";
 const MONTH_COL_START = 3; // リンクシートの月列開始位置（C列）
 
 const PDF_TYPE_OPTIONS = [
@@ -51,9 +52,10 @@ function setupSheet() {
   setupAuthSheet_(ss);
   setupLinkSheet_(ss, SOFTBANK_LINK_SHEET_NAME, "SoftBank");
   setupLinkSheet_(ss, YMOBILE_LINK_SHEET_NAME, "Ymobile");
+  setupHistorySheet_(ss);
 
   // 旧シートの削除
-  for (const name of ["_PhoneDropdown", "回線管理表"]) {
+  for (const name of ["_PhoneDropdown", "回線管理表", "シート1"]) {
     const old = ss.getSheetByName(name);
     if (old) ss.deleteSheet(old);
   }
@@ -98,10 +100,11 @@ function setupSettingsSheet_(ss) {
 
 
 /**
- * 認証情報シート: 電話番号 | キャリア | PDFの種類 | 運用端末
+ * 認証情報シート: 電話番号 | キャリア | PDFの種類 | 運用端末 | 状態
  * - サイドバーから選択した電話番号が書き込まれる
  * - パスワードは設定シートで一元管理（この列には持たない）
  * - 運用端末はサイドバー保存時に回線管理表から自動設定
+ * - 状態列: 解約済回線は「解約済」と表示（有効回線は空欄）
  */
 function setupAuthSheet_(ss) {
   let sheet = ss.getSheetByName(AUTH_SHEET_NAME);
@@ -111,8 +114,8 @@ function setupAuthSheet_(ss) {
     ss.moveActiveSheet(2);
   }
 
-  // ヘッダーを正しい4列に設定（旧形式からの移行対応）
-  const correctHeaders = ["電話番号", "キャリア", "PDFの種類", "運用端末"];
+  // ヘッダーを正しい5列に設定（旧形式からの移行対応）
+  const correctHeaders = ["電話番号", "キャリア", "PDFの種類", "運用端末", "状態"];
   const currentHeaders = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0]
     .map(h => String(h || "").trim());
 
@@ -125,8 +128,8 @@ function setupAuthSheet_(ss) {
   // ヘッダーが正しくなければ上書き
   const h0 = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0]
     .map(v => String(v || "").trim());
-  if (h0.length < 4 || h0[0] !== "電話番号" || h0[1] !== "キャリア" || h0[3] !== "運用端末") {
-    sheet.getRange(1, 1, 1, 4).setValues([correctHeaders])
+  if (h0.length < 5 || h0[0] !== "電話番号" || h0[1] !== "キャリア" || h0[3] !== "運用端末" || h0[4] !== "状態") {
+    sheet.getRange(1, 1, 1, 5).setValues([correctHeaders])
       .setFontWeight("bold").setBackground("#4285F4").setFontColor("#FFFFFF").setHorizontalAlignment("center");
   }
 
@@ -134,12 +137,13 @@ function setupAuthSheet_(ss) {
   sheet.setColumnWidth(2, 120);
   sheet.setColumnWidth(3, 220);
   sheet.setColumnWidth(4, 160);
+  sheet.setColumnWidth(5, 100);
   sheet.getRange("A:A").setNumberFormat("@");
 }
 
 
 /**
- * リンクシート: 電話番号 | PDFの種類 | 月列...
+ * リンクシート: 電話番号 | 名義 | 月列...
  * - 認証情報シートと連動（サイドバー保存時に電話番号を同期）
  * - 「PDFリンクを更新」でDriveのPDFへのハイパーリンクが書き込まれる
  */
@@ -154,6 +158,28 @@ function setupLinkSheet_(ss, sheetName, carrierLabel) {
   sheet.setColumnWidth(1, 180);
   sheet.setColumnWidth(2, 220);
   sheet.getRange("A:A").setNumberFormat("@");
+}
+
+
+/**
+ * ダウンロード履歴シート: 日時 | キャリア | 電話番号 | 対象月 | ファイル名 | 結果
+ * - Pythonスクリプトがダウンロード完了時に書き込む
+ */
+function setupHistorySheet_(ss) {
+  let sheet = ss.getSheetByName(HISTORY_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(HISTORY_SHEET_NAME);
+  if (!sheet.getRange(1, 1).getValue()) {
+    const h = ["日時", "キャリア", "電話番号", "対象月", "ファイル名", "結果"];
+    sheet.getRange(1, 1, 1, h.length).setValues([h])
+      .setFontWeight("bold").setBackground("#34A853").setFontColor("#FFFFFF").setHorizontalAlignment("center");
+  }
+  sheet.setColumnWidth(1, 160);
+  sheet.setColumnWidth(2, 100);
+  sheet.setColumnWidth(3, 140);
+  sheet.setColumnWidth(4, 80);
+  sheet.setColumnWidth(5, 350);
+  sheet.setColumnWidth(6, 80);
+  sheet.getRange("C:C").setNumberFormat("@");
 }
 
 
@@ -426,7 +452,7 @@ function savePhoneSelections(selections) {
     for (const phone of Object.keys(sel)) {
       if (cancelledSet.has(phone)) continue;
       const pdfType = sel[phone].pdfType || "電話番号別";
-      activeRows.push([phone, carrier, pdfType, deviceMap[phone] || ""]);
+      activeRows.push([phone, carrier, pdfType, deviceMap[phone] || "", ""]);
       linkData[carrier].push({ phone, name: nameMap[phone] || "" });
     }
   }
@@ -435,21 +461,21 @@ function savePhoneSelections(selections) {
   for (const carrier of ["SoftBank", "Ymobile"]) {
     for (const p of (allPhones[carrier] || [])) {
       if (p.cancelled) {
-        cancelledRows.push([p.phone, carrier, "解約済", p.device || ""]);
+        cancelledRows.push([p.phone, carrier, "", p.device || "", "解約済"]);
       }
     }
   }
 
   const allRows = [...activeRows, ...cancelledRows];
   if (allRows.length > 0) {
-    authSheet.getRange(2, 1, allRows.length, 4).setValues(allRows);
+    authSheet.getRange(2, 1, allRows.length, 5).setValues(allRows);
   }
   authSheet.getRange("A:A").setNumberFormat("@");
 
   // 解約済行をグレーアウト+取り消し線
   if (cancelledRows.length > 0) {
     const startRow = activeRows.length + 2; // 1-indexed, ヘッダー行分+1
-    const cancelledRange = authSheet.getRange(startRow, 1, cancelledRows.length, 4);
+    const cancelledRange = authSheet.getRange(startRow, 1, cancelledRows.length, 5);
     cancelledRange.setFontLine("line-through").setFontColor("#999999").setBackground("#f0f0f0");
   }
 

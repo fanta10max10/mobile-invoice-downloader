@@ -135,6 +135,8 @@ BASE_SAVE_PATH = os.environ.get("BASE_SAVE_PATH")
 TARGET_MONTH = os.environ.get("TARGET_MONTH")
 HEADLESS = os.environ.get("HEADLESS", "true").lower() in ("true", "1", "yes")
 SECURITY_CODE_TIMEOUT = int(os.environ.get("SECURITY_CODE_TIMEOUT", "300"))
+DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
+RETRY_PHONES = [p.strip() for p in os.environ.get("RETRY_PHONES", "").split(",") if p.strip()]
 # 電話番号 → 運用端末名のマップ（同スプシ月シート読み込み後に自動設定）
 _phone_device_map: dict[str, str] = {}
 
@@ -428,7 +430,8 @@ def resolve_save_path() -> str:
     except RecursionError:
         raise
     except Exception as e:
-        log.warning(f"設定シートからの保存先取得に失敗: {type(e).__name__}: {e}")
+        log.error(f"設定シートからの保存先取得に失敗しました: {e}")
+        sys.exit(1)
 
     if BASE_SAVE_PATH:
         return BASE_SAVE_PATH
@@ -516,12 +519,13 @@ def load_accounts() -> pd.DataFrame:
     df["電話番号"] = df["電話番号"].astype(str).apply(strip_hyphens)
     if "PDFの種類" not in df.columns:
         df["PDFの種類"] = "電話番号別"
-    # 解約済行を除外（GASがPDFの種類列に「解約済」と書き込む）
-    before = len(df)
-    df = df[df["PDFの種類"].str.strip() != "解約済"].reset_index(drop=True)
-    cancelled = before - len(df)
-    if cancelled > 0:
-        log.info(f"  解約済 {cancelled} 件を除外")
+    # 解約済行を除外（GASが状態列に「解約済」と書き込む）
+    if "状態" in df.columns:
+        before = len(df)
+        df = df[df["状態"].astype(str).str.strip() != "解約済"].reset_index(drop=True)
+        cancelled = before - len(df)
+        if cancelled > 0:
+            log.info(f"  解約済 {cancelled} 件を除外")
     log.info(f"  {len(df)} 件のアカウントを読み込みました")
 
     # 認証情報シートの「運用端末」列から _phone_device_map を構築
@@ -538,6 +542,27 @@ def load_accounts() -> pd.DataFrame:
             log.info(f"  運用端末マップ: {len(_phone_device_map)} 件")
 
     return df
+
+
+def _write_download_history(results: list[tuple[str, bool]], year: str, month: str) -> None:
+    """ダウンロード結果をスプレッドシートの「ダウンロード履歴」シートに記録する。"""
+    try:
+        gc = get_gspread_client()
+        sh = _open_sheet(gc)
+        try:
+            ws = sh.worksheet("ダウンロード履歴")
+        except gspread.exceptions.WorksheetNotFound:
+            log.debug("ダウンロード履歴シートが見つかりません（スキップ）")
+            return
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        rows = []
+        for phone, ok in results:
+            rows.append([now, CARRIER_NAME, phone, f"{year}{month}", "", "成功" if ok else "失敗"])
+        if rows:
+            ws.append_rows(rows, value_input_option="USER_ENTERED")
+            log.info(f"  ダウンロード履歴を記録しました（{len(rows)}件）")
+    except Exception as e:
+        log.warning(f"ダウンロード履歴の記録に失敗（処理は続行）: {e}")
 
 
 _TMPDIR = Path(tempfile.gettempdir())
@@ -1335,6 +1360,23 @@ def main():
 
     accounts = load_accounts()
 
+    if DRY_RUN:
+        log.info("=== ドライランモード ===")
+        log.info(f"  保存先: {save_dir} ({mode_label})")
+        log.info(f"  対象月: {year}年{month}月")
+        log.info(f"  対象アカウント: {len(accounts)} 件")
+        for _, row in accounts.iterrows():
+            phone = str(row["電話番号"]).strip()
+            pdf_types = parse_pdf_types(row.get("PDFの種類", "電話番号別"))
+            log.info(f"    {phone} ({', '.join(pdf_types)})")
+        log.info("ドライランのため実際のダウンロードは行いません。")
+        return
+
+    if RETRY_PHONES:
+        before = len(accounts)
+        accounts = accounts[accounts["電話番号"].isin(RETRY_PHONES)].reset_index(drop=True)
+        log.info(f"  リトライモード: {len(accounts)}/{before} 件に絞り込み")
+
     results = []
     for _, row in accounts.iterrows():
         phone = str(row["電話番号"]).strip()
@@ -1352,6 +1394,9 @@ def main():
     succeeded = sum(1 for _, ok in results if ok)
     log.info(f"  合計: {succeeded}/{len(results)} 件成功")
     log.info("=" * 50)
+
+    # ダウンロード履歴をスプレッドシートに記録
+    _write_download_history(results, year, month)
 
     if _temp_save_dir is not None and _temp_save_dir.exists():
         try:
