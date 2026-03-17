@@ -543,6 +543,12 @@ def load_accounts() -> pd.DataFrame:
     # PDFの種類列がなければデフォルト値を補完
     if "PDFの種類" not in df.columns:
         df["PDFの種類"] = "電話番号別"
+    # 解約済行を除外（GASがPDFの種類列に「解約済」と書き込む）
+    before = len(df)
+    df = df[df["PDFの種類"].str.strip() != "解約済"].reset_index(drop=True)
+    cancelled = before - len(df)
+    if cancelled > 0:
+        log.info(f"  解約済 {cancelled} 件を除外")
     log.info(f"  {len(df)} 件のアカウントを読み込みました")
 
     # 認証情報シートの「運用端末」列から _phone_device_map を構築

@@ -408,33 +408,61 @@ function savePhoneSelections(selections) {
 
   if (authSheet.getLastRow() > 1) {
     authSheet.getRange(2, 1, authSheet.getLastRow() - 1, authSheet.getLastColumn()).clearContent();
+    authSheet.getRange(2, 1, authSheet.getLastRow() - 1, authSheet.getLastColumn())
+      .setFontLine("none").setFontColor("#000000").setBackground(null);
   }
 
-  // 書き込み（解約済を除外）
-  const authRows = [];
+  // キャリア→電話番号情報マップ（解約済含む全番号）
+  const carrierPhoneMap = {};
+  for (const carrier of ["SoftBank", "Ymobile"]) {
+    for (const p of (allPhones[carrier] || [])) {
+      carrierPhoneMap[p.phone] = { carrier, ...p };
+    }
+  }
+
+  // 選択中の番号（解約済除外）+ 解約済番号を分けて書き込む
+  const activeRows = [];
+  const cancelledRows = [];
   const linkData = { SoftBank: [], Ymobile: [] };
+
   for (const carrier of ["SoftBank", "Ymobile"]) {
     const sel = selections[carrier] || {};
     for (const phone of Object.keys(sel)) {
       if (cancelledSet.has(phone)) continue;
       const pdfType = sel[phone].pdfType || "電話番号別";
-      authRows.push([phone, carrier, pdfType, deviceMap[phone] || ""]);
+      activeRows.push([phone, carrier, pdfType, deviceMap[phone] || ""]);
       linkData[carrier].push({ phone, name: nameMap[phone] || "" });
     }
   }
-  if (authRows.length > 0) {
-    authSheet.getRange(2, 1, authRows.length, 4).setValues(authRows);
+
+  // 解約済回線を末尾にまとめて追加（視覚的に区別）
+  for (const carrier of ["SoftBank", "Ymobile"]) {
+    for (const p of (allPhones[carrier] || [])) {
+      if (p.cancelled) {
+        cancelledRows.push([p.phone, carrier, "解約済", p.device || ""]);
+      }
+    }
+  }
+
+  const allRows = [...activeRows, ...cancelledRows];
+  if (allRows.length > 0) {
+    authSheet.getRange(2, 1, allRows.length, 4).setValues(allRows);
   }
   authSheet.getRange("A:A").setNumberFormat("@");
 
-  // ── リンクシートの電話番号を同期 ──
+  // 解約済行をグレーアウト+取り消し線
+  if (cancelledRows.length > 0) {
+    const startRow = activeRows.length + 2; // 1-indexed, ヘッダー行分+1
+    const cancelledRange = authSheet.getRange(startRow, 1, cancelledRows.length, 4);
+    cancelledRange.setFontLine("line-through").setFontColor("#999999").setBackground("#f0f0f0");
+  }
+
+  // ── リンクシートの電話番号を同期（解約済は含めない）──
   _syncLinkSheetPhones_(ss, SOFTBANK_LINK_SHEET_NAME, linkData.SoftBank);
   _syncLinkSheetPhones_(ss, YMOBILE_LINK_SHEET_NAME, linkData.Ymobile);
 
-  const skipped = Object.values(selections).reduce((n, s) =>
-    n + Object.keys(s).filter(ph => cancelledSet.has(ph)).length, 0);
-  let msg = `保存しました（${authRows.length}件）。`;
-  if (skipped > 0) msg += `\n解約済 ${skipped}件を除外しました。`;
+  let msg = `保存しました（有効${activeRows.length}件）。`;
+  if (cancelledRows.length > 0) msg += `\n解約済${cancelledRows.length}件をグレー表示で記録。`;
   return msg;
 }
 
