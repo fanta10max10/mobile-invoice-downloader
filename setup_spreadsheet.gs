@@ -685,6 +685,10 @@ function _parseMonthSheetNum_(name) {
 
 function updateSoftBankLinks() { _updatePdfLinks_(SOFTBANK_LINK_SHEET_NAME, "SoftBank"); }
 function updateYmobileLinks() { _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile"); }
+function updateAllLinks() {
+  _updatePdfLinks_(SOFTBANK_LINK_SHEET_NAME, "SoftBank");
+  _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile");
+}
 
 /**
  * Google Driveを探索してリンクシートにPDFリンクを設定する。
@@ -792,6 +796,10 @@ function _updatePdfLinks_(sheetName, carrier) {
 
 function scanAndUpdateSoftBankAmounts() { _scanAndUpdatePdfAmounts_(SOFTBANK_LINK_SHEET_NAME, "SoftBank"); }
 function scanAndUpdateYmobileAmounts() { _scanAndUpdatePdfAmounts_(YMOBILE_LINK_SHEET_NAME, "Ymobile"); }
+function scanAndUpdateAllAmounts() {
+  _scanAndUpdatePdfAmounts_(SOFTBANK_LINK_SHEET_NAME, "SoftBank");
+  _scanAndUpdatePdfAmounts_(YMOBILE_LINK_SHEET_NAME, "Ymobile");
+}
 
 function _scanAndUpdatePdfAmounts_(sheetName, carrier) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -941,15 +949,24 @@ function _extractAmountFromPdf_(file) {
 // ────────────────────────────────────────────────
 
 function onOpen() {
+  const linkMenu = SpreadsheetApp.getUi().createMenu("PDFリンク")
+    .addItem("全キャリア一括更新", "updateAllLinks")
+    .addSeparator()
+    .addItem("SoftBankのみ", "updateSoftBankLinks")
+    .addItem("Ymobileのみ", "updateYmobileLinks");
+
+  const amountMenu = SpreadsheetApp.getUi().createMenu("金額取得・ファイル名更新")
+    .addItem("全キャリア一括更新", "scanAndUpdateAllAmounts")
+    .addSeparator()
+    .addItem("SoftBankのみ", "scanAndUpdateSoftBankAmounts")
+    .addItem("Ymobileのみ", "scanAndUpdateYmobileAmounts");
+
   SpreadsheetApp.getUi().createMenu("携帯領収書管理 ツール")
     .addItem("初期セットアップ", "setupSheet")
     .addSeparator()
     .addItem("ダウンロード対象の電話番号を管理", "openPhoneManagerSidebar")
     .addSeparator()
-    .addItem("SoftBank PDFリンクを更新", "updateSoftBankLinks")
-    .addItem("Ymobile PDFリンクを更新", "updateYmobileLinks")
-    .addSeparator()
-    .addItem("SoftBank PDFから金額を取得・ファイル名更新", "scanAndUpdateSoftBankAmounts")
-    .addItem("Ymobile PDFから金額を取得・ファイル名更新", "scanAndUpdateYmobileAmounts")
+    .addSubMenu(linkMenu)
+    .addSubMenu(amountMenu)
     .addToUi();
 }

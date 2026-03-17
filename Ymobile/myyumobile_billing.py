@@ -32,6 +32,13 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shared_utils import (
+    strip_hyphens, parse_pdf_types, find_service_account_json, find_client_secrets,
+    guide_spreadsheet_sharing, get_gspread_client, open_sheet,
+    load_password_from_settings, write_download_history,
+)
+
 # ─── 設定 ───────────────────────────────────────────────
 
 def _bootstrap_env_from_gsheet() -> None:
@@ -75,10 +82,10 @@ def _bootstrap_client_secrets() -> None:
     Driveから自動ダウンロードを試みる。
     事前に client_secrets.json を PDF保存先フォルダにアップロードしておくこと。
     """
-    if _find_client_secrets():
+    if find_client_secrets():
         return
     try:
-        json_path = _find_service_account_json()
+        json_path = find_service_account_json()
     except FileNotFoundError:
         return
     try:
@@ -257,27 +264,13 @@ class DriveContext:
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
-def _find_client_secrets() -> "Path | None":
-    """client_secrets.json を探す（同ディレクトリ → 既知のキャリアフォルダ）"""
-    script_dir = Path(__file__).resolve().parent
-    parent = script_dir.parent
-    for p in [
-        script_dir / "client_secrets.json",
-        parent / "SoftBank" / "client_secrets.json",
-        parent / "Ymobile" / "client_secrets.json",
-    ]:
-        if p.exists():
-            return p
-    return None
-
-
 def _get_drive_service():
     """Drive APIサービスを返す。client_secrets.jsonがあればOAuth、なければサービスアカウント。"""
     _bootstrap_client_secrets()
-    secrets_path = _find_client_secrets()
+    secrets_path = find_client_secrets()
     if secrets_path:
         return _get_drive_service_oauth(secrets_path)
-    json_path = _find_service_account_json()
+    json_path = find_service_account_json()
     creds = Credentials.from_service_account_file(
         str(json_path),
         scopes=_DRIVE_SCOPES,
@@ -324,86 +317,12 @@ def get_target_month() -> tuple[str, str]:
     return str(prev.year), f"{prev.month:02d}"
 
 
-def strip_hyphens(phone: str) -> str:
-    """電話番号からハイフンを除去し、先頭0が消えていたら補完する。"""
-    cleaned = re.sub(r"[-\s\u2010-\u2015\u2212\uFF0D]", "", phone)
-    if cleaned and cleaned[0] != "0" and len(cleaned) == 10:
-        cleaned = "0" + cleaned
-    return cleaned
-
-
-def _find_service_account_json() -> Path:
-    """service_account.json を探す（同ディレクトリ → 既知のキャリアフォルダ）"""
-    script_dir = Path(__file__).resolve().parent
-    parent = script_dir.parent
-    candidates = [
-        script_dir / "service_account.json",
-        parent / "SoftBank" / "service_account.json",
-        parent / "Ymobile" / "service_account.json",
-    ]
-    for p in candidates:
-        if p.exists():
-            return p
-    raise FileNotFoundError(
-        "service_account.json が見つかりません。\n"
-        "SoftBank/ または Ymobile/ フォルダに配置してください。"
-    )
-
-
-def _guide_spreadsheet_sharing(spreadsheet_id: str) -> None:
-    """スプレッドシートへの権限エラー時にサービスアカウントのメールをクリップボードにコピー＋ブラウザを開く"""
-    try:
-        sa_email = json.loads(_find_service_account_json().read_text())["client_email"]
-    except Exception:
-        sa_email = "（service_account.json を確認してください）"
-
-    try:
-        subprocess.run(["pbcopy"], input=sa_email.encode(), check=True)
-        clipboard_msg = "（クリップボードにコピー済み）"
-    except Exception:
-        clipboard_msg = ""
-
-    url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
-    print("\n" + "=" * 60)
-    print("スプレッドシートの共有設定が必要です")
-    print(f"\nサービスアカウントのメールアドレス{clipboard_msg}:")
-    print(f"  {sa_email}")
-    print("\nブラウザでスプレッドシートを開きます...")
-    print("右上の「共有」ボタンをクリックし、上記メールを編集者として追加してください。")
-    print("=" * 60)
-    webbrowser.open(url)
-    input("\n共有設定が完了したらEnterを押してください: ")
-
-
-def get_gspread_client() -> gspread.Client:
-    json_path = _find_service_account_json()
-    creds = Credentials.from_service_account_file(
-        str(json_path),
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
-    )
-    return gspread.authorize(creds)
-
-
-def _open_sheet(gc: gspread.Client) -> gspread.Spreadsheet:
-    """スプレッドシートを開く。権限エラー時は共有案内を表示してリトライする。"""
-    try:
-        return gc.open_by_key(SPREADSHEET_ID)
-    except (PermissionError, gspread.exceptions.APIError) as e:
-        is_403 = isinstance(e, PermissionError) or (
-            hasattr(e, "response") and e.response.status_code == 403
-        )
-        if is_403:
-            _guide_spreadsheet_sharing(SPREADSHEET_ID)
-            return gc.open_by_key(SPREADSHEET_ID)
-        raise
-
-
 def resolve_save_path() -> str:
     global _drive_ctx, _temp_save_dir
 
     try:
         gc = get_gspread_client()
-        sh = _open_sheet(gc)
+        sh = open_sheet(gc, SPREADSHEET_ID)
         ws = sh.worksheet("設定")
         for row in ws.get_all_records():
             if str(row.get("設定名", "")).strip() == "PDF保存先フォルダ":
@@ -450,32 +369,6 @@ def resolve_save_path() -> str:
     sys.exit(1)
 
 
-def parse_pdf_types(raw: str) -> set[str]:
-    valid = {"電話番号別", "一括", "機種別"}
-    if not raw or str(raw).strip().lower() in ("nan", ""):
-        return {"電話番号別"}
-    types = {t.strip() for t in str(raw).split(",") if t.strip()}
-    result = types & valid
-    if not result:
-        log.warning(f"  PDFの種類 '{raw}' に有効な値がありません。デフォルト '電話番号別' を使用します。")
-        return {"電話番号別"}
-    return result
-
-
-def _load_password_from_settings(sh) -> "str | None":
-    """設定シートから共通パスワードを取得する。"""
-    try:
-        ws = sh.worksheet("設定")
-        for row in ws.get_all_records():
-            if str(row.get("設定名", "")).strip() == "パスワード":
-                pw = str(row.get("値", "")).strip()
-                if pw:
-                    return pw
-    except Exception:
-        pass
-    return None
-
-
 def load_accounts() -> pd.DataFrame:
     """スプレッドシートからアカウント情報を読み込む。
     「認証情報」シートからキャリア列でフィルタ。パスワードは設定シートから取得。
@@ -483,10 +376,10 @@ def load_accounts() -> pd.DataFrame:
     """
     log.info("スプレッドシートからアカウント情報を読み込み中...")
     gc = get_gspread_client()
-    sh = _open_sheet(gc)
+    sh = open_sheet(gc, SPREADSHEET_ID)
 
     # 設定シートから共通パスワードを取得
-    common_password = _load_password_from_settings(sh)
+    common_password = load_password_from_settings(sh)
     if not common_password:
         log.error(
             "パスワードが設定されていません。\n"
@@ -546,27 +439,6 @@ def load_accounts() -> pd.DataFrame:
             log.info(f"  運用端末マップ: {len(_phone_device_map)} 件")
 
     return df
-
-
-def _write_download_history(results: list[tuple[str, bool]], year: str, month: str) -> None:
-    """ダウンロード結果をスプレッドシートの「ダウンロード履歴」シートに記録する。"""
-    try:
-        gc = get_gspread_client()
-        sh = _open_sheet(gc)
-        try:
-            ws = sh.worksheet("ダウンロード履歴")
-        except gspread.exceptions.WorksheetNotFound:
-            log.debug("ダウンロード履歴シートが見つかりません（スキップ）")
-            return
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        rows = []
-        for phone, ok in results:
-            rows.append([now, CARRIER_NAME, phone, f"{year}{month}", "", "成功" if ok else "失敗"])
-        if rows:
-            ws.append_rows(rows, value_input_option="USER_ENTERED")
-            log.info(f"  ダウンロード履歴を記録しました（{len(rows)}件）")
-    except Exception as e:
-        log.warning(f"ダウンロード履歴の記録に失敗（処理は続行）: {e}")
 
 
 _TMPDIR = Path(tempfile.gettempdir())
@@ -1339,7 +1211,7 @@ def main():
     if not TARGET_MONTH:
         try:
             gc = get_gspread_client()
-            sh = _open_sheet(gc)
+            sh = open_sheet(gc, SPREADSHEET_ID)
             ws = sh.worksheet("設定")
             for row in ws.get_all_records():
                 if str(row.get("設定名", "")).strip() == "対象月":
@@ -1400,7 +1272,7 @@ def main():
     log.info("=" * 50)
 
     # ダウンロード履歴をスプレッドシートに記録
-    _write_download_history(results, year, month)
+    write_download_history(SPREADSHEET_ID, CARRIER_NAME, results, year, month)
 
     if _temp_save_dir is not None and _temp_save_dir.exists():
         try:
