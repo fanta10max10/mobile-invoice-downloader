@@ -1,7 +1,13 @@
 # 機密情報（絶対にGitHubにアップしない）
 .env
+service_account.json
+client_secrets.json
+drive_oauth_token.json
 MySoftBank_アカウント管理スプシURL.rtf
-src/service_account.json
+
+# Google Drive ショートカット・Windows固有ファイル
+*.gsheet
+desktop.ini
 
 # Python
 __pycache__/
@@ -17,6 +23,9 @@ __pycache__/
 # Playwright
 playwright-report/
 test-results/
+
+# 廃止済みフォルダ（SoftBank/ + Ymobile/ に移行）
+src/
 
 # ダウンロード済みPDF・デバッグフォルダ（スクリプトと同じフォルダに保存される）
 *.pdf
