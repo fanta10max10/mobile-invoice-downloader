@@ -498,9 +498,9 @@ function savePhoneSelections(selections) {
       authSheet.getRange(startRow, 3, cancelledRows.length, 1).clearDataValidations();
     }
 
-    // ── リンクシートの電話番号を同期 ──
-    _syncLinkSheetPhones_(ss, SOFTBANK_LINK_SHEET_NAME, linkData.SoftBank);
-    _syncLinkSheetPhones_(ss, YMOBILE_LINK_SHEET_NAME, linkData.Ymobile);
+    // ── リンクシートの電話番号を同期（解約済もグレー表示） ──
+    _syncLinkSheetPhones_(ss, SOFTBANK_LINK_SHEET_NAME, linkData.SoftBank, cancelledSet);
+    _syncLinkSheetPhones_(ss, YMOBILE_LINK_SHEET_NAME, linkData.Ymobile, cancelledSet);
 
     let msg = `保存しました（有効${activeRows.length}件）。`;
     if (cancelledRows.length > 0) msg += `\n解約済${cancelledRows.length}件をグレー表示で記録。`;
@@ -515,13 +515,12 @@ function savePhoneSelections(selections) {
 /**
  * リンクシートに電話番号を追加・名義を更新する。
  * 既存行は削除しない（PDFリンク等の月列データを保持するため）。
- * 新しい電話番号のみ末尾に追加する。
+ * 解約済の行はグレーアウト+取り消し線で視覚的に区別する。
  */
-function _syncLinkSheetPhones_(ss, sheetName, phoneList) {
+function _syncLinkSheetPhones_(ss, sheetName, phoneList, cancelledSet) {
   try {
     const sheet = ss.getSheetByName(sheetName);
     if (!sheet) return;
-    if (phoneList.length === 0) return;
 
     // 現在のリンクシートの電話番号を取得
     const data = sheet.getDataRange().getValues();
@@ -534,13 +533,26 @@ function _syncLinkSheetPhones_(ss, sheetName, phoneList) {
     // 追加・名義更新（既存行は削除しない）
     for (const { phone, name } of phoneList) {
       if (existingPhones[phone]) {
-        // 既存行: 名義のみ更新
         sheet.getRange(existingPhones[phone], 2).setValue(name);
       } else {
-        // 新規行: 末尾に追加
         const newRow = sheet.getLastRow() + 1;
         sheet.getRange(newRow, 1).setNumberFormat("@").setValue(phone);
         sheet.getRange(newRow, 2).setValue(name);
+      }
+    }
+
+    // 全行の解約済/有効のスタイルを更新
+    const lastCol = Math.max(sheet.getLastColumn(), 2);
+    const refreshedData = sheet.getDataRange().getValues();
+    for (let i = 1; i < refreshedData.length; i++) {
+      const phone = String(refreshedData[i][0] || "").replace(/[-\s]/g, "").trim();
+      if (!phone) continue;
+      const row = i + 1;
+      const range = sheet.getRange(row, 1, 1, lastCol);
+      if (cancelledSet && cancelledSet.has(phone)) {
+        range.setFontLine("line-through").setFontColor("#999999").setBackground("#f0f0f0");
+      } else {
+        range.setFontLine("none").setFontColor(null).setBackground(null);
       }
     }
   } catch (e) {
