@@ -110,11 +110,37 @@ function setupAuthSheet_(ss) {
     ss.setActiveSheet(sheet);
     ss.moveActiveSheet(2);
   }
-  if (!sheet.getRange(1, 1).getValue()) {
-    const h = ["電話番号", "パスワード", "キャリア", "PDFの種類", "運用端末"];
-    sheet.getRange(1, 1, 1, h.length).setValues([h])
+
+  // ヘッダーを常に正しい5列に設定（旧3列ヘッダーからの移行対応）
+  const correctHeaders = ["電話番号", "パスワード", "キャリア", "PDFの種類", "運用端末"];
+  const currentHeaders = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0];
+  const needsFix = currentHeaders.length < 5
+    || String(currentHeaders[1] || "").trim() !== "パスワード"
+    || String(currentHeaders[4] || "").trim() !== "運用端末";
+
+  if (needsFix) {
+    // 旧ヘッダーでデータがある場合、列構成を修正
+    if (sheet.getLastRow() > 1 && currentHeaders.length >= 3
+        && String(currentHeaders[0] || "").trim() === "電話番号"
+        && String(currentHeaders[1] || "").trim() === "キャリア") {
+      // 旧3列（電話番号/キャリア/PDFの種類）→ 新5列にデータ移行
+      const oldData = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+      sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
+      const newData = oldData.filter(r => String(r[0] || "").trim()).map(r => [
+        String(r[0] || "").trim(),  // 電話番号
+        "",                          // パスワード（新規追加）
+        String(r[1] || "").trim(),  // キャリア（旧B列）
+        String(r[2] || "").trim() || "電話番号別", // PDFの種類（旧C列）
+        String(r[currentHeaders.indexOf("運用端末")] || r[4] || "").trim(), // 運用端末
+      ]);
+      if (newData.length > 0) {
+        sheet.getRange(2, 1, newData.length, 5).setValues(newData);
+      }
+    }
+    sheet.getRange(1, 1, 1, 5).setValues([correctHeaders])
       .setFontWeight("bold").setBackground("#4285F4").setFontColor("#FFFFFF").setHorizontalAlignment("center");
   }
+
   sheet.setColumnWidth(1, 180);
   sheet.setColumnWidth(2, 220);
   sheet.setColumnWidth(3, 120);
