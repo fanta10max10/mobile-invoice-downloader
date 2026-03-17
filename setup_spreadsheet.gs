@@ -239,24 +239,18 @@ function _getPhoneManagerHtml_() {
       .withSuccessHandler(function(r) {
         phoneData = r.phones;
         selections = r.selections;
-        // 解約済番号を選択から自動除外
-        var removed = [];
+        // 既存の選択がなければ契約中番号を全選択（初期デフォルト）
         ["SoftBank", "Ymobile"].forEach(function(c) {
-          var phones = phoneData[c] || [];
-          var sel = selections[c] || {};
-          Object.keys(sel).forEach(function(ph) {
-            var info = phones.find(function(p) { return p.phone === ph; });
-            if (!info || info.cancelled) {
-              delete sel[ph];
-              removed.push(ph);
-            }
-          });
+          if (!selections[c]) selections[c] = {};
+          var active = (phoneData[c] || []).filter(function(p) { return !p.cancelled; });
+          var hasSelection = Object.keys(selections[c]).length > 0;
+          if (!hasSelection && active.length > 0) {
+            active.forEach(function(p) {
+              selections[c][p.phone] = { pdfType: "電話番号別" };
+            });
+          }
         });
-        if (removed.length > 0) {
-          setStatus("解約済 " + removed.length + "件を選択から除外しました", "warn");
-        } else {
-          clearStatus();
-        }
+        clearStatus();
         render();
       })
       .withFailureHandler(function(err) { setStatus("読み込みエラー: " + err.message, "error"); })
@@ -281,26 +275,28 @@ function _getPhoneManagerHtml_() {
       updateSummary(); return;
     }
 
+    // 契約中の番号のみ表示（解約済はシート側でグレー表示）
+    var active = phones.filter(function(p) { return !p.cancelled; });
+    if (active.length === 0) {
+      list.innerHTML = '<div class="empty-msg">' + currentCarrier + ' の契約中番号がありません。</div>';
+      updateSummary(); return;
+    }
+
     var html = "";
-    phones.forEach(function(p) {
+    active.forEach(function(p) {
       var checked = sel[p.phone] ? "checked" : "";
       var pdfType = (sel[p.phone] && sel[p.phone].pdfType) || "電話番号別";
-      var cls = p.cancelled ? "cancelled" : "";
       var label = p.device ? p.phone + " (" + p.device + ")" : p.phone;
-      if (p.cancelled) label += " [解約済]";
 
       html += '<div class="phone-item">'
         + '<input type="checkbox" data-phone="' + p.phone + '" ' + checked
-        + (p.cancelled ? " disabled" : "") + ' onchange="onCheck(this)">'
-        + '<span class="phone-number ' + cls + '">' + label + '</span>';
-      if (!p.cancelled) {
-        html += '<select data-phone="' + p.phone + '" onchange="onPdfType(this)">';
-        PDF_TYPES.forEach(function(t) {
-          html += '<option' + (t === pdfType ? ' selected' : '') + '>' + t + '</option>';
-        });
-        html += '</select>';
-      }
-      html += '</div>';
+        + ' onchange="onCheck(this)">'
+        + '<span class="phone-number">' + label + '</span>'
+        + '<select data-phone="' + p.phone + '" onchange="onPdfType(this)">';
+      PDF_TYPES.forEach(function(t) {
+        html += '<option' + (t === pdfType ? ' selected' : '') + '>' + t + '</option>';
+      });
+      html += '</select></div>';
     });
     list.innerHTML = html;
     updateSummary();
