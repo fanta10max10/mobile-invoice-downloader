@@ -328,8 +328,14 @@ def get_target_month() -> tuple[str, str]:
 
 
 def strip_hyphens(phone: str) -> str:
-    """電話番号からハイフンを除去する (例: 090-4769-5015 → 09047695015)"""
-    return re.sub(r"[-\s\u2010-\u2015\u2212\uFF0D]", "", phone)
+    """電話番号からハイフンを除去し、先頭0が消えていたら補完する。
+    例: 090-4769-5015 → 09047695015, 7043941930 → 07043941930
+    """
+    cleaned = re.sub(r"[-\s\u2010-\u2015\u2212\uFF0D]", "", phone)
+    # スプレッドシートで数値として読まれて先頭0が消えた場合の補完
+    if cleaned and cleaned[0] != "0" and len(cleaned) == 10:
+        cleaned = "0" + cleaned
+    return cleaned
 
 
 def _find_service_account_json() -> Path:
@@ -380,7 +386,7 @@ def get_gspread_client() -> gspread.Client:
     json_path = _find_service_account_json()
     creds = Credentials.from_service_account_file(
         str(json_path),
-        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
     )
     return gspread.authorize(creds)
 
