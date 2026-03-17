@@ -88,7 +88,7 @@ function setupSettingsSheet_(ss) {
   _upsertSettingRow_(sheet, "このスプレッドシートURL", ss.getUrl(),
     "Pythonの SPREADSHEET_URL にコピーしてください。");
   _upsertSettingRow_(sheet, "回線管理スプレッドシート", "",
-    "回線管理表のURL（月別シートに電話番号・解約済・運用端末がある別スプレッドシート）。");
+    "回線管理スプレッドシートのURL（月別シートに電話番号・解約済・運用端末がある別スプレッドシート）。");
   _upsertSettingRow_(sheet, "PDF保存先フォルダ", "https://drive.google.com/drive/folders/XXXXXXXX",
     "Google DriveのフォルダURL、またはローカル絶対パス。");
   _upsertSettingRow_(sheet, "パスワード", "",
@@ -103,7 +103,7 @@ function setupSettingsSheet_(ss) {
  * 認証情報シート: 電話番号 | キャリア | PDFの種類 | 運用端末 | 状態
  * - サイドバーから選択した電話番号が書き込まれる
  * - パスワードは設定シートで一元管理（この列には持たない）
- * - 運用端末はサイドバー保存時に回線管理表から自動設定
+ * - 運用端末はサイドバー保存時に回線管理スプレッドシートから自動設定
  * - 状態列: 解約済回線は「解約済」と表示（有効回線は空欄）
  */
 function setupAuthSheet_(ss) {
@@ -272,7 +272,7 @@ function _getPhoneManagerHtml_() {
   function clearStatus() { document.getElementById("status").className = "status"; }
 
   function init() {
-    setStatus("回線管理表から電話番号を読み込み中...", "loading");
+    setStatus("回線管理スプレッドシートから電話番号を読み込み中...", "loading");
     google.script.run
       .withSuccessHandler(function(r) {
         phoneData = r.phones;
@@ -559,7 +559,7 @@ function _syncLinkSheetPhones_(ss, sheetName, phoneList) {
 }
 
 
-// ── 回線管理表の読み込み ──
+// ── 回線管理スプレッドシートの読み込み ──
 
 function _normalizeCarrierName_(text) {
   const s = String(text).trim().toLowerCase();
