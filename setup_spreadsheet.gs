@@ -139,6 +139,19 @@ function setupAuthSheet_(ss) {
   sheet.setColumnWidth(4, 160);
   sheet.setColumnWidth(5, 100);
   sheet.getRange("A:A").setNumberFormat("@");
+
+  // キャリア列にドロップダウンを設定
+  const lastRow = Math.max(sheet.getLastRow(), 50);
+  const carrierRange = sheet.getRange(2, 2, lastRow - 1, 1);
+  carrierRange.setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(["SoftBank", "Ymobile"], true)
+    .setAllowInvalid(false).build());
+
+  // PDFの種類列にドロップダウンを設定
+  const pdfTypeRange = sheet.getRange(2, 3, lastRow - 1, 1);
+  pdfTypeRange.setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(PDF_TYPE_OPTIONS, true)
+    .setAllowInvalid(true).build());
 }
 
 
