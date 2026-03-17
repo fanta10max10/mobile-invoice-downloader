@@ -496,8 +496,8 @@ def _load_password_from_settings(sh) -> "str | None":
 
 def load_accounts() -> pd.DataFrame:
     """スプレッドシートからアカウント情報を読み込む。
-    「認証情報」シート優先（キャリア列でフィルタ）、なければ「アカウント」シートにフォールバック。
-    パスワードは設定シートの共通パスワードを優先し、なければ認証情報シートのパスワード列を使用。
+    「認証情報」シートからキャリア列でフィルタ。パスワードは設定シートから取得。
+    認証情報シートの列: 電話番号 | キャリア | PDFの種類 | 運用端末
     """
     log.info("スプレッドシートからアカウント情報を読み込み中...")
     gc = get_gspread_client()
@@ -505,10 +505,14 @@ def load_accounts() -> pd.DataFrame:
 
     # 設定シートから共通パスワードを取得
     common_password = _load_password_from_settings(sh)
-    if common_password:
-        log.info("  設定シートから共通パスワードを取得しました")
+    if not common_password:
+        log.error(
+            "パスワードが設定されていません。\n"
+            "  設定シートの「パスワード」行にログインパスワードを入力してください。"
+        )
+        sys.exit(1)
 
-    # 「認証情報」シートを優先（統合スプシ用）
+    # 「認証情報」シートを読み込み
     df: "pd.DataFrame | None" = None
     df_all: "pd.DataFrame | None" = None
     try:
@@ -525,26 +529,15 @@ def load_accounts() -> pd.DataFrame:
         df = None
 
     if df is None:
-        # フォールバック: 旧「アカウント」シート
-        ws = sh.worksheet("アカウント")
-        records = ws.get_all_records()
-        df = pd.DataFrame(records)
-        df.columns = df.columns.str.strip()
-        log.info("  「アカウント」シートからアカウントを読み込み（フォールバック）")
+        log.error("「認証情報」シートが見つからないか、電話番号・キャリア列がありません。")
+        sys.exit(1)
 
     if "電話番号" not in df.columns:
         log.error(f"スプレッドシートに「電話番号」カラムがありません。現在のカラム: {list(df.columns)}")
         sys.exit(1)
 
-    # パスワード: 設定シート共通パスワード → 認証情報シートのパスワード列 → エラー
-    if common_password:
-        df["パスワード"] = common_password
-    elif "パスワード" not in df.columns:
-        log.error(
-            "パスワードが設定されていません。\n"
-            "  設定シートの「パスワード」行にログインパスワードを入力してください。"
-        )
-        sys.exit(1)
+    # パスワードは設定シートから一律設定
+    df["パスワード"] = common_password
     # 電話番号のハイフンを除去
     df["電話番号"] = df["電話番号"].astype(str).apply(strip_hyphens)
     # PDFの種類列がなければデフォルト値を補完

@@ -98,9 +98,9 @@ function setupSettingsSheet_(ss) {
 
 
 /**
- * 認証情報シート: 電話番号 | パスワード | キャリア | PDFの種類 | 運用端末
+ * 認証情報シート: 電話番号 | キャリア | PDFの種類 | 運用端末
  * - サイドバーから選択した電話番号が書き込まれる
- * - パスワードは空欄可（設定シートの共通パスワードが優先）
+ * - パスワードは設定シートで一元管理（この列には持たない）
  * - 運用端末はサイドバー保存時に回線管理表から自動設定
  */
 function setupAuthSheet_(ss) {
@@ -111,41 +111,29 @@ function setupAuthSheet_(ss) {
     ss.moveActiveSheet(2);
   }
 
-  // ヘッダーを常に正しい5列に設定（旧3列ヘッダーからの移行対応）
-  const correctHeaders = ["電話番号", "パスワード", "キャリア", "PDFの種類", "運用端末"];
-  const currentHeaders = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0];
-  const needsFix = currentHeaders.length < 5
-    || String(currentHeaders[1] || "").trim() !== "パスワード"
-    || String(currentHeaders[4] || "").trim() !== "運用端末";
+  // ヘッダーを正しい4列に設定（旧形式からの移行対応）
+  const correctHeaders = ["電話番号", "キャリア", "PDFの種類", "運用端末"];
+  const currentHeaders = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0]
+    .map(h => String(h || "").trim());
 
-  if (needsFix) {
-    // 旧ヘッダーでデータがある場合、列構成を修正
-    if (sheet.getLastRow() > 1 && currentHeaders.length >= 3
-        && String(currentHeaders[0] || "").trim() === "電話番号"
-        && String(currentHeaders[1] || "").trim() === "キャリア") {
-      // 旧3列（電話番号/キャリア/PDFの種類）→ 新5列にデータ移行
-      const oldData = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
-      sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
-      const newData = oldData.filter(r => String(r[0] || "").trim()).map(r => [
-        String(r[0] || "").trim(),  // 電話番号
-        "",                          // パスワード（新規追加）
-        String(r[1] || "").trim(),  // キャリア（旧B列）
-        String(r[2] || "").trim() || "電話番号別", // PDFの種類（旧C列）
-        String(r[currentHeaders.indexOf("運用端末")] || r[4] || "").trim(), // 運用端末
-      ]);
-      if (newData.length > 0) {
-        sheet.getRange(2, 1, newData.length, 5).setValues(newData);
-      }
-    }
-    sheet.getRange(1, 1, 1, 5).setValues([correctHeaders])
+  // パスワード列が残っていたら削除
+  const pwIdx = currentHeaders.indexOf("パスワード");
+  if (pwIdx !== -1) {
+    sheet.deleteColumn(pwIdx + 1);
+  }
+
+  // ヘッダーが正しくなければ上書き
+  const h0 = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0]
+    .map(v => String(v || "").trim());
+  if (h0.length < 4 || h0[0] !== "電話番号" || h0[1] !== "キャリア" || h0[3] !== "運用端末") {
+    sheet.getRange(1, 1, 1, 4).setValues([correctHeaders])
       .setFontWeight("bold").setBackground("#4285F4").setFontColor("#FFFFFF").setHorizontalAlignment("center");
   }
 
   sheet.setColumnWidth(1, 180);
-  sheet.setColumnWidth(2, 220);
-  sheet.setColumnWidth(3, 120);
-  sheet.setColumnWidth(4, 220);
-  sheet.setColumnWidth(5, 160);
+  sheet.setColumnWidth(2, 120);
+  sheet.setColumnWidth(3, 220);
+  sheet.setColumnWidth(4, 160);
   sheet.getRange("A:A").setNumberFormat("@");
 }
 
@@ -418,33 +406,24 @@ function savePhoneSelections(selections) {
     setupAuthSheet_(ss);
   }
 
-  // 既存パスワードを保持
-  const existingPw = {};
   if (authSheet.getLastRow() > 1) {
-    const data = authSheet.getDataRange().getValues();
-    const h = data[0].map(v => String(v).trim());
-    const pi = h.indexOf("電話番号"), pwi = h.indexOf("パスワード");
-    for (let i = 1; i < data.length; i++) {
-      const ph = String(data[i][pi] || "").replace(/[-\s]/g, "").trim();
-      if (ph && pwi !== -1) existingPw[ph] = String(data[i][pwi] || "");
-    }
     authSheet.getRange(2, 1, authSheet.getLastRow() - 1, authSheet.getLastColumn()).clearContent();
   }
 
   // 書き込み（解約済を除外）
   const authRows = [];
-  const linkData = { SoftBank: [], Ymobile: [] }; // リンクシート用
+  const linkData = { SoftBank: [], Ymobile: [] };
   for (const carrier of ["SoftBank", "Ymobile"]) {
     const sel = selections[carrier] || {};
     for (const phone of Object.keys(sel)) {
-      if (cancelledSet.has(phone)) continue; // 解約済スキップ
+      if (cancelledSet.has(phone)) continue;
       const pdfType = sel[phone].pdfType || "電話番号別";
-      authRows.push([phone, existingPw[phone] || "", carrier, pdfType, deviceMap[phone] || ""]);
+      authRows.push([phone, carrier, pdfType, deviceMap[phone] || ""]);
       linkData[carrier].push({ phone, name: nameMap[phone] || "" });
     }
   }
   if (authRows.length > 0) {
-    authSheet.getRange(2, 1, authRows.length, 5).setValues(authRows);
+    authSheet.getRange(2, 1, authRows.length, 4).setValues(authRows);
   }
   authSheet.getRange("A:A").setNumberFormat("@");
 
