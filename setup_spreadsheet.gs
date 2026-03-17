@@ -134,7 +134,7 @@ function setupLinkSheet_(ss, sheetName, carrierLabel) {
   if (!sheet) sheet = ss.insertSheet(sheetName);
   if (!sheet.getRange(1, 1).getValue()) {
     const color = carrierLabel === "SoftBank" ? "#4285F4" : "#FF6D00";
-    sheet.getRange(1, 1, 1, 2).setValues([["電話番号", "PDFの種類"]])
+    sheet.getRange(1, 1, 1, 2).setValues([["電話番号", "名義"]])
       .setFontWeight("bold").setBackground(color).setFontColor("#FFFFFF").setHorizontalAlignment("center");
   }
   sheet.setColumnWidth(1, 180);
@@ -376,11 +376,12 @@ function savePhoneSelections(selections) {
     }
   }
 
-  // 運用端末マップ
-  const deviceMap = {};
+  // 運用端末・名義マップ
+  const deviceMap = {}, nameMap = {};
   for (const carrier of ["SoftBank", "Ymobile"]) {
     for (const p of (allPhones[carrier] || [])) {
       if (p.device) deviceMap[p.phone] = p.device;
+      if (p.name) nameMap[p.phone] = p.name;
     }
   }
 
@@ -413,7 +414,7 @@ function savePhoneSelections(selections) {
       if (cancelledSet.has(phone)) continue; // 解約済スキップ
       const pdfType = sel[phone].pdfType || "電話番号別";
       authRows.push([phone, existingPw[phone] || "", carrier, pdfType, deviceMap[phone] || ""]);
-      linkData[carrier].push({ phone, pdfType });
+      linkData[carrier].push({ phone, name: nameMap[phone] || "" });
     }
   }
   if (authRows.length > 0) {
@@ -459,13 +460,19 @@ function _syncLinkSheetPhones_(ss, sheetName, phoneList) {
     sheet.deleteRow(rowNum);
   }
 
-  // 追加が必要な番号
+  // 追加が必要な番号 + 既存行の名義更新
   const currentPhones = new Set(Object.keys(existingPhones).filter(ph => targetPhones.has(ph)));
-  for (const { phone, pdfType } of phoneList) {
+  const nameByPhone = {};
+  for (const p of phoneList) nameByPhone[p.phone] = p.name || "";
+
+  for (const { phone, name } of phoneList) {
     if (!currentPhones.has(phone)) {
       const newRow = sheet.getLastRow() + 1;
       sheet.getRange(newRow, 1).setNumberFormat("@").setValue(phone);
-      sheet.getRange(newRow, 2).setValue(pdfType);
+      sheet.getRange(newRow, 2).setValue(name);
+    } else {
+      // 既存行の名義を更新
+      sheet.getRange(existingPhones[phone], 2).setValue(name);
     }
   }
 }
@@ -539,9 +546,11 @@ function _getAllPhonesFromMonthSheets_() {
     const cancelled = ci !== undefined && String(row[ci] || "").toUpperCase() === "TRUE";
     const di = cols["運用端末"];
     const device = di !== undefined ? String(row[di] || "").trim() : "";
+    const ni = cols["名義"] !== undefined ? cols["名義"] : cols["契約者名"];
+    const name = ni !== undefined ? String(row[ni] || "").trim() : "";
 
     if (!result[carrier].some(p => p.phone === phone)) {
-      result[carrier].push({ phone, cancelled, device });
+      result[carrier].push({ phone, cancelled, device, name });
     }
   }
   return result;
@@ -652,12 +661,12 @@ function _updatePdfLinks_(sheetName, carrier) {
     if (ph) phoneToRow[ph] = i + 1;
   }
 
-  // PDFに含まれるがリンクシートにない電話番号を自動追加
+  // PDFに含まれるがリンクシートにない電話番号を自動追加（名義は認証情報から取得不可のため空欄）
   const newPhones = [...new Set(pdfEntries.map(e => e.phone))].filter(ph => !phoneToRow[ph]);
   for (const ph of newPhones) {
     const row = sheet.getLastRow() + 1;
     sheet.getRange(row, 1).setNumberFormat("@").setValue(ph);
-    sheet.getRange(row, 2).setValue("電話番号別");
+    sheet.getRange(row, 2).setValue("");
     phoneToRow[ph] = row;
   }
 
