@@ -154,8 +154,11 @@ def write_download_history(
     results: list[tuple[str, bool]],
     year: str,
     month: str,
+    save_dir: "str | Path | None" = None,
 ) -> None:
-    """ダウンロード結果をスプレッドシートの「ダウンロード履歴」シートに記録する。"""
+    """ダウンロード結果をスプレッドシートの「ダウンロード履歴」シートに記録する。
+    save_dir が指定されている場合、ダウンロード済みPDFのファイル名も記録する。
+    """
     try:
         gc = get_gspread_client()
         sh = gc.open_by_key(spreadsheet_id)
@@ -164,10 +167,30 @@ def write_download_history(
         except gspread.exceptions.WorksheetNotFound:
             log.debug("ダウンロード履歴シートが見つかりません（スキップ）")
             return
+
+        # save_dir からダウンロード済みファイル名を収集
+        downloaded_files = {}
+        if save_dir:
+            try:
+                from pathlib import Path as P
+                sd = P(str(save_dir))
+                if sd.exists():
+                    for f in sd.glob("*.pdf"):
+                        # ファイル名形式: YYYYMM_{carrier}_{phone}_*.pdf
+                        m = re.match(rf"^\d{{6}}_{re.escape(carrier_name)}_(\d+)", f.name)
+                        if m:
+                            phone = m.group(1)
+                            if phone not in downloaded_files:
+                                downloaded_files[phone] = []
+                            downloaded_files[phone].append(f.name)
+            except Exception:
+                pass
+
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         rows = []
         for phone, ok in results:
-            rows.append([now, carrier_name, phone, f"{year}{month}", "", "成功" if ok else "失敗"])
+            filenames = ", ".join(downloaded_files.get(phone, []))
+            rows.append([now, carrier_name, phone, f"{year}{month}", filenames, "成功" if ok else "失敗"])
         if rows:
             ws.append_rows(rows, value_input_option="USER_ENTERED")
             log.info(f"  ダウンロード履歴を記録しました（{len(rows)}件）")

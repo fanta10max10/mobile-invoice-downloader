@@ -1272,7 +1272,7 @@ def main():
     log.info("=" * 50)
 
     # ダウンロード履歴をスプレッドシートに記録
-    write_download_history(SPREADSHEET_ID, CARRIER_NAME, results, year, month)
+    write_download_history(SPREADSHEET_ID, CARRIER_NAME, results, year, month, save_dir)
 
     if _temp_save_dir is not None and _temp_save_dir.exists():
         try:
