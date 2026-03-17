@@ -277,17 +277,15 @@ function _getPhoneManagerHtml_() {
     google.script.run
       .withSuccessHandler(function(r) {
         phoneData = r.phones;
-        selections = r.selections;
-        // 既存の選択がなければ契約中番号を全選択（初期デフォルト）
+        var savedSelections = r.selections;
+        // 契約中番号を全選択した上で、既存の選択があればPDFの種類を復元
+        selections = { SoftBank: {}, Ymobile: {} };
         ["SoftBank", "Ymobile"].forEach(function(c) {
-          if (!selections[c]) selections[c] = {};
           var active = (phoneData[c] || []).filter(function(p) { return !p.cancelled; });
-          var hasSelection = Object.keys(selections[c]).length > 0;
-          if (!hasSelection && active.length > 0) {
-            active.forEach(function(p) {
-              selections[c][p.phone] = { pdfType: "電話番号別" };
-            });
-          }
+          var saved = savedSelections[c] || {};
+          active.forEach(function(p) {
+            selections[c][p.phone] = { pdfType: (saved[p.phone] && saved[p.phone].pdfType) || "電話番号別" };
+          });
         });
         clearStatus();
         render();
