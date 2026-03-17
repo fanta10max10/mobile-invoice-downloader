@@ -3,7 +3,7 @@
 My SoftBank 料金明細PDF自動ダウンロードスクリプト
 
 前提:
-  - アカウント情報は認証情報管理シート（サービスアカウント認証）から取得
+  - 回線情報は認証情報管理シート（サービスアカウントまたはOAuth2認証）から取得
   - PDFはGoogle Drive API経由で直接アップロード（またはローカルパスに保存）
   - 2段階認証(セキュリティ番号)はターミナルのinput()で手動入力
 """
@@ -397,11 +397,11 @@ def resolve_save_path() -> str:
 
 
 def load_accounts() -> pd.DataFrame:
-    """スプレッドシートからアカウント情報を読み込む。
+    """スプレッドシートから回線情報を読み込む。
     「認証情報」シートからキャリア列でフィルタ。パスワードは設定シートから取得。
     認証情報シートの列: 電話番号 | キャリア | PDFの種類 | 運用端末
     """
-    log.info("スプレッドシートからアカウント情報を読み込み中...")
+    log.info("スプレッドシートから回線情報を読み込み中...")
     gc = get_gspread_client()
     sh = open_sheet(gc, SPREADSHEET_ID)
 
@@ -424,7 +424,7 @@ def load_accounts() -> pd.DataFrame:
         df_all.columns = df_all.columns.str.strip()
         if "電話番号" in df_all.columns and "キャリア" in df_all.columns:
             df = df_all[df_all["キャリア"].str.strip() == CARRIER_NAME].reset_index(drop=True)
-            log.info(f"  「認証情報」シートから {CARRIER_NAME} アカウントを読み込み")
+            log.info(f"  「認証情報」シートから {CARRIER_NAME} 回線を読み込み")
         else:
             df = None
     except gspread.exceptions.WorksheetNotFound:
@@ -452,7 +452,7 @@ def load_accounts() -> pd.DataFrame:
         cancelled = before - len(df)
         if cancelled > 0:
             log.info(f"  解約済 {cancelled} 件を除外")
-    log.info(f"  {len(df)} 件のアカウントを読み込みました")
+    log.info(f"  {len(df)} 件の回線を読み込みました")
 
     # 認証情報シートの「運用端末」列から _phone_device_map を構築
     # （GASが回線管理表から自動同期した値をそのまま使用）
@@ -476,7 +476,7 @@ CODE_FILE = _TMPDIR / "softbank_security_code.txt"
 
 
 def _session_file(phone_number: str) -> Path:
-    """電話番号ごとに独立したセッションファイルパスを返す（アカウント干渉防止）"""
+    """電話番号ごとに独立したセッションファイルパスを返す（回線間の干渉防止）"""
     return _TMPDIR / f"softbank_session_{phone_number}.json"
 
 
@@ -1264,7 +1264,7 @@ def download_billing_pdf(
     save_dir: Path,
     pdf_types: set[str] | None = None,
 ) -> bool:
-    """1アカウント分のPDFダウンロード処理。
+    """1回線分のPDFダウンロード処理。
     ログイン → 書面発行 → 自分で印刷する → 月選択 → PDFダウンロード
     """
     if pdf_types is None:
@@ -1377,14 +1377,14 @@ def main():
     mode_label = "Drive APIモード" if _drive_ctx else "ローカルモード"
     log.info(f"保存先: {save_dir} ({mode_label})")
 
-    # アカウント情報の読み込み
+    # 回線情報の読み込み
     accounts = load_accounts()
 
     if DRY_RUN:
         log.info("=== ドライランモード ===")
         log.info(f"  保存先: {save_dir} ({mode_label})")
         log.info(f"  対象月: {year}年{month}月")
-        log.info(f"  対象アカウント: {len(accounts)} 件")
+        log.info(f"  対象回線: {len(accounts)} 件")
         for _, row in accounts.iterrows():
             phone = str(row["電話番号"]).strip()
             pdf_types = parse_pdf_types(row.get("PDFの種類", "電話番号別"))
@@ -1397,7 +1397,7 @@ def main():
         accounts = accounts[accounts["電話番号"].isin(RETRY_PHONES)].reset_index(drop=True)
         log.info(f"  リトライモード: {len(accounts)}/{before} 件に絞り込み")
 
-    # 各アカウントについてPDFをダウンロード
+    # 各回線についてPDFをダウンロード
     results = []
     for _, row in accounts.iterrows():
         phone = str(row["電話番号"]).strip()
@@ -1434,7 +1434,7 @@ def main():
         log.warning(f"{len(failed)} 件の失敗がありました")
         sys.exit(1)
     else:
-        log.info("全アカウントの処理が正常に完了しました")
+        log.info("全回線の処理が正常に完了しました")
 
 
 if __name__ == "__main__":

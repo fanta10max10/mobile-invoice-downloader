@@ -3,7 +3,7 @@
 service_account.json
 client_secrets.json
 drive_oauth_token.json
-MySoftBank_アカウント管理スプシURL.rtf
+MySoftBank_*.rtf
 
 # Google Drive ショートカット・Windows固有ファイル
 *.gsheet
