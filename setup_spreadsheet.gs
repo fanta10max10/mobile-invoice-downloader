@@ -541,18 +541,17 @@ function _syncLinkSheetPhones_(ss, sheetName, phoneList, cancelledSet) {
       }
     }
 
-    // 全行の解約済/有効のスタイルを更新
-    const lastCol = Math.max(sheet.getLastColumn(), 2);
+    // 電話番号・名義列（A,B列）のみ解約済スタイルを更新（月列のリンクはそのまま）
     const refreshedData = sheet.getDataRange().getValues();
     for (let i = 1; i < refreshedData.length; i++) {
       const phone = String(refreshedData[i][0] || "").replace(/[-\s]/g, "").trim();
       if (!phone) continue;
       const row = i + 1;
-      const range = sheet.getRange(row, 1, 1, lastCol);
+      const abRange = sheet.getRange(row, 1, 1, 2);
       if (cancelledSet && cancelledSet.has(phone)) {
-        range.setFontLine("line-through").setFontColor("#999999").setBackground("#f0f0f0");
+        abRange.setFontLine("line-through").setFontColor("#999999");
       } else {
-        range.setFontLine("none").setFontColor(null).setBackground(null);
+        abRange.setFontLine("none").setFontColor(null);
       }
     }
   } catch (e) {
