@@ -163,11 +163,10 @@ function setupAuthSheet_(ss) {
 function setupLinkSheet_(ss, sheetName, carrierLabel) {
   let sheet = ss.getSheetByName(sheetName);
   if (!sheet) sheet = ss.insertSheet(sheetName);
-  if (!sheet.getRange(1, 1).getValue()) {
-    const color = carrierLabel === "SoftBank" ? "#4285F4" : "#FF6D00";
-    sheet.getRange(1, 1, 1, 2).setValues([["電話番号", "名義"]])
-      .setFontWeight("bold").setBackground(color).setFontColor("#FFFFFF").setHorizontalAlignment("center");
-  }
+  // ヘッダーを常に正しい値に設定（旧「PDFの種類」→「名義」の移行対応）
+  const color = carrierLabel === "SoftBank" ? "#4285F4" : "#FF6D00";
+  sheet.getRange(1, 1, 1, 2).setValues([["電話番号", "名義"]])
+    .setFontWeight("bold").setBackground(color).setFontColor("#FFFFFF").setHorizontalAlignment("center");
   sheet.setColumnWidth(1, 180);
   sheet.setColumnWidth(2, 220);
   sheet.getRange("A:A").setNumberFormat("@");
@@ -443,9 +442,11 @@ function savePhoneSelections(selections) {
     const lastRow = authSheet.getLastRow();
     const lastCol = Math.max(authSheet.getLastColumn(), 5);
     if (lastRow > 1) {
-      const clearRange = authSheet.getRange(2, 1, lastRow - 1, lastCol);
-      clearRange.clearContent();
-      clearRange.clearFormat();
+      const rows = lastRow - 1;
+      authSheet.getRange(2, 1, rows, lastCol).clearContent();
+      // フォント・色・背景のみリセット（ドロップダウンは保持）
+      authSheet.getRange(2, 1, rows, lastCol)
+        .setFontLine("none").setFontColor(null).setBackground(null).setFontWeight("normal");
     }
 
     // 選択中の番号（解約済除外）
@@ -483,6 +484,9 @@ function savePhoneSelections(selections) {
       const startRow = activeRows.length + 2;
       authSheet.getRange(startRow, 1, cancelledRows.length, 5)
         .setFontLine("line-through").setFontColor("#999999").setBackground("#f0f0f0");
+      // 解約済行のドロップダウンバリデーションをクリア（空値を許容するため）
+      authSheet.getRange(startRow, 2, cancelledRows.length, 1).clearDataValidations();
+      authSheet.getRange(startRow, 3, cancelledRows.length, 1).clearDataValidations();
     }
 
     // ── リンクシートの電話番号を同期 ──
