@@ -513,18 +513,15 @@ function savePhoneSelections(selections) {
 
 
 /**
- * リンクシートの電話番号行を認証情報と同期する。
- * 既存のリンク（月列のデータ）は保持しつつ、電話番号行の追加・削除を行う。
+ * リンクシートに電話番号を追加・名義を更新する。
+ * 既存行は削除しない（PDFリンク等の月列データを保持するため）。
+ * 新しい電話番号のみ末尾に追加する。
  */
 function _syncLinkSheetPhones_(ss, sheetName, phoneList) {
   try {
     const sheet = ss.getSheetByName(sheetName);
     if (!sheet) return;
     if (phoneList.length === 0) return;
-
-    const targetPhones = new Set(phoneList.map(p => p.phone));
-    const nameByPhone = {};
-    for (const p of phoneList) nameByPhone[p.phone] = p.name || "";
 
     // 現在のリンクシートの電話番号を取得
     const data = sheet.getDataRange().getValues();
@@ -534,29 +531,13 @@ function _syncLinkSheetPhones_(ss, sheetName, phoneList) {
       if (phone) existingPhones[phone] = i + 1;
     }
 
-    // 不要な行を削除（降順で削除して行番号ズレを防ぐ）
-    const toDelete = Object.entries(existingPhones)
-      .filter(([ph]) => !targetPhones.has(ph))
-      .sort((a, b) => b[1] - a[1]);
-    for (const [, rowNum] of toDelete) {
-      if (rowNum <= sheet.getLastRow()) {
-        sheet.deleteRow(rowNum);
-      }
-    }
-
-    // 削除後にリフレッシュ（行番号が変わるので再取得）
-    const refreshedData = sheet.getDataRange().getValues();
-    const refreshedPhones = {};
-    for (let i = 1; i < refreshedData.length; i++) {
-      const phone = String(refreshedData[i][0] || "").replace(/[-\s]/g, "").trim();
-      if (phone) refreshedPhones[phone] = i + 1;
-    }
-
-    // 追加・名義更新
+    // 追加・名義更新（既存行は削除しない）
     for (const { phone, name } of phoneList) {
-      if (refreshedPhones[phone]) {
-        sheet.getRange(refreshedPhones[phone], 2).setValue(name);
+      if (existingPhones[phone]) {
+        // 既存行: 名義のみ更新
+        sheet.getRange(existingPhones[phone], 2).setValue(name);
       } else {
+        // 新規行: 末尾に追加
         const newRow = sheet.getLastRow() + 1;
         sheet.getRange(newRow, 1).setNumberFormat("@").setValue(phone);
         sheet.getRange(newRow, 2).setValue(name);
