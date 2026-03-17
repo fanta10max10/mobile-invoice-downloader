@@ -242,6 +242,7 @@ function _getPhoneManagerHtml_() {
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-save { background: #4285F4; color: #fff; }
   .btn-all { background: #e0e0e0; color: #333; font-size: 11px; }
+  .btn-reload { background: #e0e0e0; color: #333; font-size: 11px; }
   .empty-msg { padding: 20px; text-align: center; color: #999; }
   .summary { font-size: 11px; color: #666; margin-top: 4px; }
 </style>
@@ -255,6 +256,7 @@ function _getPhoneManagerHtml_() {
   <div id="phoneList" class="phone-list"><div class="empty-msg">読み込み中...</div></div>
   <div id="summary" class="summary"></div>
   <div class="btn-bar">
+    <button class="btn btn-reload" onclick="reload()">再読込</button>
     <button class="btn btn-all" onclick="toggleAll()">全選択/解除</button>
     <button class="btn btn-save" id="saveBtn" onclick="save()">保存</button>
   </div>
@@ -376,6 +378,13 @@ function _getPhoneManagerHtml_() {
     document.getElementById("summary").textContent =
       "選択中: SoftBank " + Object.keys(selections["SoftBank"] || {}).length +
       "件 / Ymobile " + Object.keys(selections["Ymobile"] || {}).length + "件";
+  }
+
+  function reload() {
+    phoneData = {};
+    selections = {};
+    document.getElementById("phoneList").innerHTML = '<div class="empty-msg">読み込み中...</div>';
+    init();
   }
 
   function save() {
