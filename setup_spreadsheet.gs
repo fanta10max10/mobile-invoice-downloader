@@ -957,6 +957,28 @@ function runPendingSyncIfNeeded_() {
 
 
 /**
+ * 自動同期タイマーを解除する。
+ */
+function deleteTimeTrigger_() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let deleted = 0;
+  for (const t of triggers) {
+    if (t.getHandlerFunction() === "runPendingSyncIfNeeded_") {
+      ScriptApp.deleteTrigger(t);
+      deleted++;
+    }
+  }
+  SpreadsheetApp.getUi().alert(
+    deleted > 0 ? "完了" : "情報",
+    deleted > 0
+      ? `自動同期タイマーを解除しました（${deleted} 件）。`
+      : "自動同期タイマーは登録されていませんでした。",
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+}
+
+
+/**
  * 1分毎の時間ベーストリガーを登録する（初回のみ手動実行）。
  * すでにトリガーが存在する場合は何もしない。
  */
@@ -1082,6 +1104,7 @@ function onOpen() {
     .addSeparator()
     .addItem("回線管理表から認証情報を更新", "syncKaisenKanriToAuth")
     .addItem("自動同期タイマーを設定（初回のみ）", "setupTimeTrigger_")
+    .addItem("自動同期タイマーを解除", "deleteTimeTrigger_")
     .addSeparator()
     .addItem("電話番号ドロップダウンを更新", "refreshPhoneDropdowns")
     .addItem("電話番号ドロップダウン デバッグ", "debugPhoneDropdown")
