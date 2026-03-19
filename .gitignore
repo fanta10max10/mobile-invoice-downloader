@@ -16,6 +16,9 @@ __pycache__/
 .python-version
 .venv/
 
+# Claude Code（ローカル設定は除外、プロジェクト設定はコミット対象）
+.claude/settings.local.json
+
 # macOS
 .DS_Store
 .AppleDouble
@@ -24,8 +27,11 @@ __pycache__/
 playwright-report/
 test-results/
 
-# 廃止済みフォルダ（SoftBank/ + Ymobile/ に移行）
+# 廃止済みフォルダ
 src/
+
+# 別リポジトリ管理
+mf-journal-tools/
 
 # ダウンロード済みPDF・デバッグフォルダ（スクリプトと同じフォルダに保存される）
 *.pdf

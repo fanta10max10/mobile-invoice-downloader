@@ -47,6 +47,7 @@ const PDF_TYPE_OPTIONS = [
 // ────────────────────────────────────────────────
 
 function setupSheet() {
+  _clearSettingsCache_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   setupSettingsSheet_(ss);
   setupAuthSheet_(ss);
@@ -65,7 +66,7 @@ function setupSheet() {
     "設定・認証情報・リンクシートを作成しました。\n\n" +
     "1. 設定シートに「回線管理スプレッドシート」のURLを入力\n" +
     "2. 設定シートに「パスワード」を入力\n" +
-    "3. メニュー「ダウンロード対象の電話番号を管理」で対象を選択",
+    "3. メニュー「携帯領収書管理 ツール」→「ダウンロード対象の電話番号を管理」で対象を選択",
     SpreadsheetApp.getUi().ButtonSet.OK
   );
 }
@@ -104,7 +105,7 @@ function setupSettingsSheet_(ss) {
  * - サイドバーから選択した電話番号が書き込まれる
  * - パスワードは設定シートで一元管理（認証情報シートにはパスワード列を持たない）
  * - 運用端末はサイドバー保存時に回線管理スプレッドシートから自動設定
- * - 状態列: 解約済回線は「解約済」と表示（有効回線は空欄）
+ * - 状態列: 有効回線は「契約中」、解約済回線は「解約済」と表示
  */
 function setupAuthSheet_(ss) {
   let sheet = ss.getSheetByName(AUTH_SHEET_NAME);
@@ -468,7 +469,7 @@ function savePhoneSelections(selections) {
       for (const phone of Object.keys(sel)) {
         if (cancelledSet.has(phone)) continue;
         const pdfType = sel[phone].pdfType || "電話番号別";
-        activeRows.push([phone, carrier, pdfType, deviceMap[phone] || "", ""]);
+        activeRows.push([phone, carrier, pdfType, deviceMap[phone] || "", "契約中"]);
         linkData[carrier].push({ phone, name: nameMap[phone] || "" });
       }
     }
@@ -526,7 +527,7 @@ function _syncLinkSheetPhones_(ss, sheetName, phoneList, cancelledSet) {
     const data = sheet.getDataRange().getValues();
     const existingPhones = {};
     for (let i = 1; i < data.length; i++) {
-      const phone = String(data[i][0] || "").replace(/[-\s]/g, "").trim();
+      const phone = _normalizePhone_(data[i][0]);
       if (phone) existingPhones[phone] = i + 1;
     }
 
@@ -544,7 +545,7 @@ function _syncLinkSheetPhones_(ss, sheetName, phoneList, cancelledSet) {
     // 電話番号・名義列（A,B列）のみ解約済スタイルを更新（月列のリンクはそのまま）
     const refreshedData = sheet.getDataRange().getValues();
     for (let i = 1; i < refreshedData.length; i++) {
-      const phone = String(refreshedData[i][0] || "").replace(/[-\s]/g, "").trim();
+      const phone = _normalizePhone_(refreshedData[i][0]);
       if (!phone) continue;
       const row = i + 1;
       const abRange = sheet.getRange(row, 1, 1, 2);
@@ -617,7 +618,7 @@ function _getAllPhonesFromMonthSheets_() {
 
     if (!cols || cols["電話番号"] === undefined) continue;
 
-    const phone = String(row[cols["電話番号"]] || "").replace(/[-\s]/g, "").trim();
+    const phone = _normalizePhone_(row[cols["電話番号"]]);
     if (!phone || !/^\d{10,13}$/.test(phone)) continue;
 
     let carrier = cols["キャリア"] !== undefined ? _normalizeCarrierName_(row[cols["キャリア"]]) : null;
@@ -661,7 +662,7 @@ function _getCurrentSelections_() {
   if (pi === -1) return result;
 
   for (let i = 1; i < data.length; i++) {
-    const phone = String(data[i][pi] || "").replace(/[-\s]/g, "").trim();
+    const phone = _normalizePhone_(data[i][pi]);
     const carrier = ci !== -1 ? String(data[i][ci] || "").trim() : "";
     const pdfType = ti !== -1 ? String(data[i][ti] || "").trim() : "電話番号別";
     if (phone && carrier && result[carrier]) {
@@ -684,36 +685,47 @@ function _parseMonthSheetNum_(name) {
 //  PDFリンク更新
 // ────────────────────────────────────────────────
 
-function updateSoftBankLinks() { _updatePdfLinks_(SOFTBANK_LINK_SHEET_NAME, "SoftBank"); }
-function updateYmobileLinks() { _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile"); }
-function updateAllLinks() {
-  _updatePdfLinks_(SOFTBANK_LINK_SHEET_NAME, "SoftBank");
-  _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile");
+function updateSoftBankLinks()      { _updatePdfLinks_(SOFTBANK_LINK_SHEET_NAME, "SoftBank"); }
+function updateYmobileLinks()       { _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile"); }
+function forceUpdateSoftBankLinks() { _updatePdfLinks_(SOFTBANK_LINK_SHEET_NAME, "SoftBank", false, true); }
+function forceUpdateYmobileLinks()  { _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile", false, true); }
+
+function updateAllLinks()      { _runAllLinkUpdates_(false); }
+function forceUpdateAllLinks() { _runAllLinkUpdates_(true); }
+
+function _runAllLinkUpdates_(force) {
+  const sb = _updatePdfLinks_(SOFTBANK_LINK_SHEET_NAME, "SoftBank", true, force);
+  const ym = _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile", true, force);
+  _showLinkUpdateResult_((sb.pdfs || 0) + (ym.pdfs || 0), (sb.added || 0) + (ym.added || 0),
+    (sb.overwritten || 0) + (ym.overwritten || 0), (sb.newPhones || 0) + (ym.newPhones || 0), force);
 }
 
 /**
  * Google Driveを探索してリンクシートにPDFリンクを設定する。
  * リンクシートに電話番号がない場合でも、Driveで見つかったPDFの電話番号を自動追加する。
+ * silent=true のときはポップアップを出さず結果オブジェクトを返す（一括更新用）。
+ * force=true のときは設定済みセルも上書きする（通常は設定済みをスキップ）。
  */
-function _updatePdfLinks_(sheetName, carrier) {
+function _updatePdfLinks_(sheetName, carrier, silent = false, force = false) {
+  const ui = SpreadsheetApp.getUi();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet) {
-    SpreadsheetApp.getUi().alert("エラー", `「${sheetName}」が見つかりません。setupSheet()を実行してください。`, SpreadsheetApp.getUi().ButtonSet.OK);
-    return;
+    ui.alert("エラー", `「${sheetName}」が見つかりません。setupSheet()を実行してください。`, ui.ButtonSet.OK);
+    return { pdfs: 0, updated: 0, newPhones: 0 };
   }
 
   const rootFolderUrl = _getSettingValue_("PDF保存先フォルダ");
   if (!rootFolderUrl || !rootFolderUrl.startsWith("https://drive.google.com/")) {
-    SpreadsheetApp.getUi().alert("エラー", "設定シートの「PDF保存先フォルダ」にDriveのURLを設定してください。", SpreadsheetApp.getUi().ButtonSet.OK);
-    return;
+    ui.alert("エラー", "設定シートの「PDF保存先フォルダ」にDriveのURLを設定してください。", ui.ButtonSet.OK);
+    return { pdfs: 0, updated: 0, newPhones: 0 };
   }
 
   const folderMatch = rootFolderUrl.match(/\/folders\/([a-zA-Z0-9_-]+)/);
-  if (!folderMatch) { SpreadsheetApp.getUi().alert("エラー", "フォルダURLからIDを取得できません。", SpreadsheetApp.getUi().ButtonSet.OK); return; }
+  if (!folderMatch) { ui.alert("エラー", "フォルダURLからIDを取得できません。", ui.ButtonSet.OK); return { pdfs: 0, updated: 0, newPhones: 0 }; }
   let rootFolder;
   try { rootFolder = DriveApp.getFolderById(folderMatch[1]); }
-  catch (e) { SpreadsheetApp.getUi().alert("エラー", `フォルダアクセス失敗: ${e.message}`, SpreadsheetApp.getUi().ButtonSet.OK); return; }
+  catch (e) { ui.alert("エラー", `フォルダアクセス失敗: ${e.message}`, ui.ButtonSet.OK); return { pdfs: 0, updated: 0, newPhones: 0 }; }
 
   // PDFを収集
   const pdfEntries = [];
@@ -735,15 +747,15 @@ function _updatePdfLinks_(sheetName, carrier) {
   }
 
   if (pdfEntries.length === 0) {
-    SpreadsheetApp.getUi().alert("情報", `${carrier}のPDFが見つかりません。`, SpreadsheetApp.getUi().ButtonSet.OK);
-    return;
+    if (!silent) SpreadsheetApp.getUi().alert("情報", `${carrier}のPDFが見つかりません。`, SpreadsheetApp.getUi().ButtonSet.OK);
+    return { pdfs: 0, updated: 0, newPhones: 0 };
   }
 
   // 電話番号→行番号マップ（なければ自動追加）
   let data = sheet.getDataRange().getValues();
   const phoneToRow = {};
   for (let i = 1; i < data.length; i++) {
-    const ph = String(data[i][0] || "").replace(/[-\s]/g, "").trim();
+    const ph = _normalizePhone_(data[i][0]);
     if (ph) phoneToRow[ph] = i + 1;
   }
 
@@ -762,7 +774,7 @@ function _updatePdfLinks_(sheetName, carrier) {
   for (const h of neededHeaders) _ensureMonthColumn_(sheet, h);
 
   // リンク書き込み
-  let updated = 0;
+  let added = 0, overwritten = 0;
   const processed = new Set();
   for (const entry of pdfEntries) {
     const rowNum = phoneToRow[entry.phone];
@@ -777,17 +789,18 @@ function _updatePdfLinks_(sheetName, carrier) {
     }
     processed.add(key);
 
+    const cell = sheet.getRange(rowNum, colNum);
+    const hasFormula = !!cell.getFormula();
+    if (hasFormula && !force) { overwritten++; continue; }
     const url = entry.file.getUrl();
     const am = entry.file.getName().match(/_(\d+)円\.pdf$/);
     const label = am ? `${parseInt(entry.month)}月 ${Number(am[1]).toLocaleString()}円` : `${parseInt(entry.month)}月`;
-    sheet.getRange(rowNum, colNum).setFormula(`=HYPERLINK("${url}","${label}")`);
-    updated++;
+    cell.setFormula(`=HYPERLINK("${url}","${label}")`);
+    if (hasFormula) { overwritten++; } else { added++; }
   }
 
-  SpreadsheetApp.getUi().alert("完了",
-    `${pdfEntries.length}件のPDFを確認、${updated}件のリンクを設定しました。` +
-    (newPhones.length > 0 ? `\n${newPhones.length}件の電話番号を自動追加しました。` : ""),
-    SpreadsheetApp.getUi().ButtonSet.OK);
+  if (!silent) _showLinkUpdateResult_(pdfEntries.length, added, overwritten, newPhones.length, force);
+  return { pdfs: pdfEntries.length, added, overwritten, newPhones: newPhones.length };
 }
 
 
@@ -798,24 +811,33 @@ function _updatePdfLinks_(sheetName, carrier) {
 function scanAndUpdateSoftBankAmounts() { _scanAndUpdatePdfAmounts_(SOFTBANK_LINK_SHEET_NAME, "SoftBank"); }
 function scanAndUpdateYmobileAmounts() { _scanAndUpdatePdfAmounts_(YMOBILE_LINK_SHEET_NAME, "Ymobile"); }
 function scanAndUpdateAllAmounts() {
-  _scanAndUpdatePdfAmounts_(SOFTBANK_LINK_SHEET_NAME, "SoftBank");
-  _scanAndUpdatePdfAmounts_(YMOBILE_LINK_SHEET_NAME, "Ymobile");
+  const sb = _scanAndUpdatePdfAmounts_(SOFTBANK_LINK_SHEET_NAME, "SoftBank", true);
+  const ym = _scanAndUpdatePdfAmounts_(YMOBILE_LINK_SHEET_NAME, "Ymobile", true);
+  const total = (sb.total || 0) + (ym.total || 0);
+  const updated = (sb.updated || 0) + (ym.updated || 0);
+  const failed = (sb.failed || 0) + (ym.failed || 0);
+  if (total === 0) {
+    SpreadsheetApp.getUi().alert("情報", "金額が未取得のPDFはありませんでした。", SpreadsheetApp.getUi().ButtonSet.OK);
+  } else {
+    SpreadsheetApp.getUi().alert("完了", `${total}件処理: 更新${updated}件、失敗${failed}件`, SpreadsheetApp.getUi().ButtonSet.OK);
+  }
 }
 
-function _scanAndUpdatePdfAmounts_(sheetName, carrier) {
+function _scanAndUpdatePdfAmounts_(sheetName, carrier, silent = false) {
+  const ui = SpreadsheetApp.getUi();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) { SpreadsheetApp.getUi().alert("エラー", `「${sheetName}」が見つかりません。`, SpreadsheetApp.getUi().ButtonSet.OK); return; }
+  if (!sheet) { ui.alert("エラー", `「${sheetName}」が見つかりません。`, ui.ButtonSet.OK); return { total: 0, updated: 0, failed: 0 }; }
 
   const rootFolderUrl = _getSettingValue_("PDF保存先フォルダ");
   if (!rootFolderUrl || !rootFolderUrl.startsWith("https://drive.google.com/")) {
-    SpreadsheetApp.getUi().alert("エラー", "PDF保存先フォルダが未設定です。", SpreadsheetApp.getUi().ButtonSet.OK); return;
+    ui.alert("エラー", "PDF保存先フォルダが未設定です。", ui.ButtonSet.OK); return { total: 0, updated: 0, failed: 0 };
   }
   const folderMatch = rootFolderUrl.match(/\/folders\/([a-zA-Z0-9_-]+)/);
-  if (!folderMatch) { SpreadsheetApp.getUi().alert("エラー", "フォルダIDを取得できません。", SpreadsheetApp.getUi().ButtonSet.OK); return; }
+  if (!folderMatch) { ui.alert("エラー", "フォルダIDを取得できません。", ui.ButtonSet.OK); return { total: 0, updated: 0, failed: 0 }; }
   let rootFolder;
   try { rootFolder = DriveApp.getFolderById(folderMatch[1]); }
-  catch (e) { SpreadsheetApp.getUi().alert("エラー", `フォルダアクセス失敗: ${e.message}`, SpreadsheetApp.getUi().ButtonSet.OK); return; }
+  catch (e) { ui.alert("エラー", `フォルダアクセス失敗: ${e.message}`, ui.ButtonSet.OK); return { total: 0, updated: 0, failed: 0 }; }
 
   const pdfEntries = [];
   const yfs = rootFolder.getFolders();
@@ -826,12 +848,15 @@ function _scanAndUpdatePdfAmounts_(sheetName, carrier) {
   }}
 
   const targets = pdfEntries.filter(e => e.file.getName().endsWith("_利用料金明細.pdf"));
-  if (targets.length === 0) { SpreadsheetApp.getUi().alert("情報", "金額が未取得のPDFはありませんでした。", SpreadsheetApp.getUi().ButtonSet.OK); return; }
+  if (targets.length === 0) {
+    if (!silent) SpreadsheetApp.getUi().alert("情報", "金額が未取得のPDFはありませんでした。", SpreadsheetApp.getUi().ButtonSet.OK);
+    return { total: 0, updated: 0, failed: 0 };
+  }
 
   const data = sheet.getDataRange().getValues();
   const phoneToRow = {};
   for (let i = 1; i < data.length; i++) {
-    const ph = String(data[i][0] || "").replace(/[-\s]/g, "").trim();
+    const ph = _normalizePhone_(data[i][0]);
     if (ph) phoneToRow[ph] = i + 1;
   }
 
@@ -847,7 +872,8 @@ function _scanAndUpdatePdfAmounts_(sheetName, carrier) {
     }
     updated++;
   }
-  SpreadsheetApp.getUi().alert("完了", `${targets.length}件処理: 更新${updated}件、失敗${failed}件`, SpreadsheetApp.getUi().ButtonSet.OK);
+  if (!silent) SpreadsheetApp.getUi().alert("完了", `${targets.length}件処理: 更新${updated}件、失敗${failed}件`, SpreadsheetApp.getUi().ButtonSet.OK);
+  return { total: targets.length, updated, failed };
 }
 
 
@@ -855,14 +881,31 @@ function _scanAndUpdatePdfAmounts_(sheetName, carrier) {
 //  内部ヘルパー
 // ────────────────────────────────────────────────
 
+let _settingsCache = null;
+
 function _getSettingValue_(key) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SETTINGS_SHEET_NAME);
-  if (!sheet) return null;
-  const data = sheet.getDataRange().getValues();
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === key) return String(data[i][1]).trim() || null;
+  if (!_settingsCache) {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SETTINGS_SHEET_NAME);
+    if (!sheet) return null;
+    const data = sheet.getDataRange().getValues();
+    _settingsCache = {};
+    for (let i = 1; i < data.length; i++) {
+      const k = String(data[i][0]).trim();
+      const v = String(data[i][1]).trim() || null;
+      if (k) _settingsCache[k] = v;
+    }
   }
-  return null;
+  return _settingsCache[key] || null;
+}
+
+function _clearSettingsCache_() { _settingsCache = null; }
+
+function _normalizePhone_(phone) {
+  let s = String(phone || "").trim();
+  s = s.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  s = s.replace(/[-\s\u2010-\u2015\u2212\uFF0D]/g, "");
+  if (s.length === 10 && s[0] !== "0") s = "0" + s;
+  return s;
 }
 
 function _collectCarrierPdfs_(folder, carrier, results) {
@@ -881,6 +924,7 @@ function _monthHeaderToNum_(h) {
 }
 
 function _ensureMonthColumn_(sheet, monthHeader) {
+  SpreadsheetApp.flush();
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   if (headers.some(h => String(h).trim() === monthHeader)) return;
   const targetNum = _monthHeaderToNum_(monthHeader);
@@ -929,6 +973,17 @@ function _setTargetMonthValidation_(sheet) {
   }
 }
 
+function _showLinkUpdateResult_(total, added, skippedOrOverwritten, newPhones, force) {
+  const parts = [];
+  if (added > 0) parts.push(`新規 ${added}件`);
+  if (skippedOrOverwritten > 0) parts.push(force ? `上書き ${skippedOrOverwritten}件` : `設定済み ${skippedOrOverwritten}件（スキップ）`);
+  const linkMsg = parts.length > 0 ? parts.join("、") : "変更なし";
+  SpreadsheetApp.getUi().alert("完了",
+    `${total}件のPDFを確認（${linkMsg}）` +
+    (newPhones > 0 ? `\n${newPhones}件の電話番号を自動追加しました。` : ""),
+    SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
 function _extractAmountFromPdf_(file) {
   let docFileId = null;
   try {
@@ -954,7 +1009,11 @@ function onOpen() {
     .addItem("全キャリア一括更新", "updateAllLinks")
     .addSeparator()
     .addItem("SoftBankのみ", "updateSoftBankLinks")
-    .addItem("Ymobileのみ", "updateYmobileLinks");
+    .addItem("Ymobileのみ", "updateYmobileLinks")
+    .addSeparator()
+    .addItem("全キャリア一括（強制上書き）", "forceUpdateAllLinks")
+    .addItem("SoftBankのみ（強制上書き）", "forceUpdateSoftBankLinks")
+    .addItem("Ymobileのみ（強制上書き）", "forceUpdateYmobileLinks");
 
   const amountMenu = SpreadsheetApp.getUi().createMenu("金額取得・ファイル名更新")
     .addItem("全キャリア一括更新", "scanAndUpdateAllAmounts")
