@@ -1587,12 +1587,14 @@ def download_billing_pdf(
             except Exception as e:
                 log.warning(f"  セッション保存に失敗: {e}")
 
-            if not select_target_month(ctx, page, year, month):
-                _save_debug_screenshot(
-                    ctx, page, save_dir, phone_number, year, month,
-                    "月選択失敗", f"対象月 {year}{month} の選択に失敗しました",
-                )
-                return "failed"
+            # au系は _au_download_pdf_from_page 内で月選択も行うためスキップ
+            if ctx.config.carrier_family != "au":
+                if not select_target_month(ctx, page, year, month):
+                    _save_debug_screenshot(
+                        ctx, page, save_dir, phone_number, year, month,
+                        "月選択失敗", f"対象月 {year}{month} の選択に失敗しました",
+                    )
+                    return "failed"
 
             success = download_pdf_from_page(ctx, page, save_dir, year, month, phone_number, pdf_types)
             if not success:
@@ -2060,62 +2062,26 @@ def _load_au_pin(ctx: BillingContext) -> "str | None":
 
 
 def _au_select_target_month(ctx: BillingContext, page, year: str, month: str) -> bool:
-    """au WEB de 請求書で対象月のチェックボックスを選択する。"""
+    """au WEB de 請求書で対象月のラジオボタンを選択する。
+    ラジオボタンのvalue形式: "{index}_{YYYYMM}" (例: "1_202602")
+    """
     target_ym = f"{year}{month}"
-    target_label = f"{year}年{month}月"
-    target_label_alt = f"{year}年{int(month)}月"  # "2026年2月" 形式
-    log.info(f"対象月を選択中: {target_label} (au WEB de 請求書)")
+    log.info(f"対象月を選択中: {year}年{month}月 (au WEB de 請求書)")
 
     try:
-        # まず全チェックボックスを外す
-        checkboxes = page.locator('input[type="checkbox"]')
-        for i in range(checkboxes.count()):
-            cb = checkboxes.nth(i)
-            if cb.is_checked():
-                cb.uncheck()
+        # ラジオボタンから対象月を探す（value末尾が _YYYYMM のもの）
+        radios = page.locator('input[type="radio"][name="bill"]')
+        for i in range(radios.count()):
+            radio = radios.nth(i)
+            value = radio.get_attribute("value") or ""
+            if value.endswith(f"_{target_ym}"):
+                radio.check()
+                log.info(f"  月を選択しました: value={value}")
+                time.sleep(1)
+                return True
 
-        # 対象月のチェックボックスを探す
-        found = False
-
-        # value属性で検索
-        target_cb = page.locator(f'input[type="checkbox"][value="{target_ym}"]')
-        if target_cb.count() > 0:
-            target_cb.first.check()
-            found = True
-            log.info(f"  月を選択しました（value属性）: {target_ym}")
-        else:
-            # ラベルテキストで検索
-            all_labels = page.locator("label")
-            for i in range(all_labels.count()):
-                label = all_labels.nth(i)
-                label_text = (label.text_content() or "").strip()
-                if target_label in label_text or target_label_alt in label_text or target_ym in label_text:
-                    # ラベルに対応するチェックボックスをクリック
-                    label.click()
-                    found = True
-                    log.info(f"  月を選択しました（ラベル）: {label_text}")
-                    break
-
-        if not found:
-            # テーブル行のテキストから検索
-            rows = page.locator("tr")
-            for i in range(rows.count()):
-                row = rows.nth(i)
-                row_text = (row.text_content() or "").strip()
-                if target_label in row_text or target_label_alt in row_text:
-                    cb = row.locator('input[type="checkbox"]')
-                    if cb.count() > 0:
-                        cb.first.check()
-                        found = True
-                        log.info(f"  月を選択しました（テーブル行）: {row_text[:30]}")
-                        break
-
-        if not found:
-            log.error(f"  対象月 {target_label} のチェックボックスが見つかりませんでした")
-            return False
-
-        time.sleep(1)
-        return True
+        log.error(f"  対象月 {target_ym} のラジオボタンが見つかりませんでした")
+        return False
 
     except Exception as e:
         log.error(f"対象月の選択に失敗しました: {e}")
@@ -2126,90 +2092,108 @@ def _au_download_pdf_from_page(
     ctx: BillingContext, page, save_dir: Path, year: str, month: str, phone: str,
     pdf_types: set[str] | None = None,
 ) -> bool:
-    """au WEB de 請求書からPDFをダウンロードする。"""
+    """au WEB de 請求書からPDFをダウンロードする。
+    pdf_types: {"請求書"}, {"領収書"}, {"支払証明書"} のいずれか
+    各種別ごとにダウンロードページのURLパラメータが異なる:
+      請求書: DlCals=01, 領収書: DlCals=02, 支払証明書: DlCals=03
+    """
     if pdf_types is None:
         pdf_types = {"請求書"}
 
     log.info(f"ダウンロード対象: {', '.join(sorted(pdf_types))}")
 
-    amount = ""
-    try:
-        amount_el = page.locator("text=/[\\d,]+円/").first
-        if amount_el.is_visible(timeout=3000):
-            raw_amount = amount_el.text_content()
-            if raw_amount:
-                amount = sanitize_amount(raw_amount)
-                log.info(f"  請求金額を取得: {amount}")
-    except Exception:
-        log.info("  請求金額の取得をスキップしました")
-
+    dl_params = {"請求書": "01", "領収書": "02", "支払証明書": "03"}
     any_success = False
 
     for pdf_type in sorted(pdf_types):
+        dl_cal = dl_params.get(pdf_type)
+        if not dl_cal:
+            log.warning(f"  不明なPDFの種類: {pdf_type}")
+            continue
+
         log.info(f"{pdf_type}のダウンロードを試みます...")
 
-        # 対応するタブがあれば切り替え
+        # 対応するダウンロードページへ遷移（種別ごとにURLが異なる）
+        agdt = "2" if pdf_type == "支払証明書" else "1"
+        dl_url = f"https://my.au.com/aus/seikyu/download?agdt={agdt}&DlCals={dl_cal}"
         try:
-            tab = page.get_by_text(pdf_type, exact=False)
-            if tab.first.is_visible(timeout=2000):
-                tab.first.click()
-                page.wait_for_load_state("networkidle")
-                time.sleep(1)
+            page.goto(dl_url, wait_until="networkidle")
+            time.sleep(3)
+            log.info(f"  ダウンロードページ: {page.url}")
+        except Exception as e:
+            log.error(f"  ダウンロードページへの遷移に失敗: {e}")
+            continue
+
+        # 対象月のラジオボタンを選択
+        target_ym = f"{year}{month}"
+        radios = page.locator('input[type="radio"][name="bill"]')
+        month_selected = False
+        for i in range(radios.count()):
+            radio = radios.nth(i)
+            value = radio.get_attribute("value") or ""
+            if value.endswith(f"_{target_ym}"):
+                radio.check(force=True)
+                log.info(f"  月を選択: value={value}")
+                month_selected = True
+                break
+        if not month_selected:
+            log.error(f"  対象月 {target_ym} のラジオボタンが見つかりません")
+            continue
+
+        # 金額取得を試みる
+        amount = ""
+        try:
+            amount_el = page.locator("text=/[\\d,]+円/").first
+            if amount_el.is_visible(timeout=2000):
+                raw_amount = amount_el.text_content()
+                if raw_amount:
+                    amount = sanitize_amount(raw_amount)
+                    log.info(f"  請求金額: {amount}")
         except Exception:
             pass
 
-        # ダウンロードボタンを探す
-        download_btn = (
-            page.get_by_text(re.compile(r"ダウンロード"), exact=False)
-            .or_(page.get_by_text(re.compile(r"保存"), exact=False))
-            .or_(page.get_by_text(re.compile(r"印刷"), exact=False))
-            .or_(page.locator('a[href*="pdf"]'))
-            .or_(page.locator('a[href*="download"]'))
-            .or_(page.locator('a[href*="print"]'))
-        )
-
+        # 「選択した期間の請求書のダウンロード」ボタンをクリック
+        download_btn = page.get_by_text(re.compile(r"選択した期間の.+ダウンロード"), exact=False)
         try:
-            if download_btn.first.is_visible(timeout=5000):
-                # 確認ダイアログが出る場合があるので、dialogイベントをハンドル
+            if not download_btn.first.is_visible(timeout=3000):
+                download_btn = page.get_by_text("ダウンロード", exact=False)
+        except Exception:
+            download_btn = page.get_by_text("ダウンロード", exact=False)
+
+        for attempt in range(3):
+            try:
                 page.on("dialog", lambda dialog: dialog.accept())
+                with page.expect_download(timeout=60000) as download_info:
+                    download_btn.first.click()
+                download = download_info.value
+                filename = build_filename(ctx, year, month, phone, amount)
+                if pdf_type != "請求書":
+                    stem = Path(filename).stem
+                    filename = f"{stem}_{pdf_type}.pdf"
+                dest = save_dir / filename
 
-                for attempt in range(3):
+                download.save_as(str(dest))
+
+                if ctx.drive_ctx is not None:
+                    folder_id = ctx.drive_ctx.get_folder_id(year, month)
+                    ok = ctx.drive_ctx.upload(dest, folder_id)
                     try:
-                        with page.expect_download(timeout=60000) as download_info:
-                            download_btn.first.click()
-                        download = download_info.value
-                        filename = build_filename(ctx, year, month, phone, amount)
-                        if pdf_type != "請求書":
-                            stem = Path(filename).stem
-                            filename = f"{stem}_{pdf_type}.pdf"
-                        dest = save_dir / filename
-
-                        download.save_as(str(dest))
-
-                        if ctx.drive_ctx is not None:
-                            folder_id = ctx.drive_ctx.get_folder_id(year, month)
-                            ok = ctx.drive_ctx.upload(dest, folder_id)
-                            try:
-                                dest.unlink()
-                            except Exception:
-                                pass
-                            if ok:
-                                any_success = True
-                            break
-                        else:
-                            log.info(f"  [{pdf_type}] 保存完了: {dest}")
-                            any_success = True
-                            break
-                    except Exception as e:
-                        if attempt < 2:
-                            log.warning(f"  [{pdf_type}] ダウンロード失敗 (試行{attempt+1}/3): {e}")
-                            time.sleep(2 * (2 ** attempt))
-                        else:
-                            log.warning(f"  [{pdf_type}] ダウンロード失敗 (全3回試行): {e}")
-            else:
-                log.info(f"  {pdf_type}のダウンロードボタンが見つかりませんでした")
-        except Exception as e:
-            log.warning(f"  {pdf_type}のダウンロードに失敗: {e}")
+                        dest.unlink()
+                    except Exception:
+                        pass
+                    if ok:
+                        any_success = True
+                    break
+                else:
+                    log.info(f"  [{pdf_type}] 保存完了: {dest}")
+                    any_success = True
+                    break
+            except Exception as e:
+                if attempt < 2:
+                    log.warning(f"  [{pdf_type}] ダウンロード失敗 (試行{attempt+1}/3): {e}")
+                    time.sleep(2 * (2 ** attempt))
+                else:
+                    log.warning(f"  [{pdf_type}] ダウンロード失敗 (全3回試行): {e}")
 
     if not any_success:
         log.error("指定した種別のPDFがダウンロードできませんでした")
