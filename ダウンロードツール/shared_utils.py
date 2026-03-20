@@ -1690,7 +1690,8 @@ def run_main(ctx: BillingContext) -> None:
                     br = pw.chromium.launch(headless=True)
                     bctx = br.new_context(locale="ja-JP", user_agent=USER_AGENT)
                     pg = bctx.new_page()
-                    pg.goto(ctx.config.bill_pdf_url, wait_until="networkidle", timeout=15000)
+                    test_url = ctx.config.bill_pdf_url or ctx.config.au_billing_top_url or ctx.config.login_url
+                    pg.goto(test_url, wait_until="networkidle", timeout=15000)
                     log.info(f"  ページアクセステスト: OK (URL: {pg.url})")
                     bctx.close()
                     br.close()
