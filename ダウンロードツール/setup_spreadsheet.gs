@@ -921,9 +921,11 @@ function _scanAndUpdatePdfAmounts_(sheetName, carrier, silent = false) {
     if (ph) phoneToRow[ph] = i + 1;
   }
 
+  const isAuFamily = (carrier === "au" || carrier === "UQmobile");
   let updated = 0, failed = 0;
   for (const entry of targets) {
-    const amount = _extractAmountFromPdf_(entry.file);
+    // au/UQはまとめ請求PDFなので電話番号を渡して個別金額を取得
+    const amount = _extractAmountFromPdf_(entry.file, isAuFamily ? entry.phone : null);
     if (!amount) { failed++; continue; }
     entry.file.setName(entry.file.getName().replace("_利用料金明細.pdf", `_${amount}円.pdf`));
     const rowNum = phoneToRow[entry.phone];
@@ -1052,18 +1054,45 @@ function _showLinkUpdateResult_(total, added, skippedOrOverwritten, newPhones, f
     SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
-function _extractAmountFromPdf_(file) {
+/**
+ * PDFから金額を取得する。
+ * SoftBank/Ymobile: 「計」の後の金額を取得（1回線1PDF）
+ * au/UQmobile: 電話番号に対応する個別金額を取得（まとめ請求PDF）
+ *   PDFの1ページ目に「（内訳）０８０－１４３８－８３４３  ( 1,851 )」形式で記載
+ */
+function _extractAmountFromPdf_(file, phone) {
   let docFileId = null;
   try {
     const docFile = Drive.Files.insert({ title: "tmp_ocr_" + file.getName() }, file.getBlob(), { convert: true });
     docFileId = docFile.id;
     const text = DocumentApp.openById(docFileId).getBody().getText();
+
+    // au/UQmobile: 電話番号が指定された場合、その番号の個別金額を取得
+    if (phone) {
+      // 電話番号のフォーマットを全角ハイフン付きに変換（OCRテキストは全角）
+      const p = phone.replace(/^0/, "０").replace(/(\d)/g, c => String.fromCharCode(c.charCodeAt(0) + 0xFEE0));
+      const formatted = p.slice(0, 3) + "－" + p.slice(3, 7) + "－" + p.slice(7);
+      // 「０８０－２６６３－６３２８」の後の金額パターンを検索
+      // パターン1: 電話番号の後に ( 1,851 ) 形式
+      const escPhone = formatted.replace(/[－]/g, "[－\\-]");
+      const pat1 = new RegExp(escPhone + "[^\\d]*?[\\(（]\\s*([\\d,，]+)\\s*[\\)）]");
+      const m1 = text.match(pat1);
+      if (m1) { const a = m1[1].replace(/[,，]/g, ""); if (/^\d+$/.test(a)) return a; }
+      // パターン2: 半角数字版
+      const halfPhone = phone.replace(/(\d{3})(\d{4})(\d{4})/, "$1-$2-$3");
+      const pat2 = new RegExp(halfPhone.replace(/-/g, "[－\\-]") + "[^\\d]*?[\\(（]\\s*([\\d,，]+)\\s*[\\)）]");
+      const m2 = text.match(pat2);
+      if (m2) { const a = m2[1].replace(/[,，]/g, ""); if (/^\d+$/.test(a)) return a; }
+      Logger.log(`[OCR] au/UQ phone=${phone} formatted=${formatted} not found in text`);
+    }
+
+    // SoftBank/Ymobile（またはau/UQで番号が見つからない場合のフォールバック）: 「計」の後の金額
     for (const pat of [/(?<![小合])計[^\d]*([\d,]+)/, /小計[^\d]*([\d,]+)/]) {
       const m = text.match(pat);
       if (m) { const a = m[1].replace(/,/g, ""); if (/^\d+$/.test(a)) return a; }
     }
     return null;
-  } catch (e) { return null; }
+  } catch (e) { Logger.log(`[OCR] error: ${e.message}`); return null; }
   finally { if (docFileId) try { Drive.Files.remove(docFileId); } catch (_) {} }
 }
 
