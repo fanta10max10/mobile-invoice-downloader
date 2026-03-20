@@ -1868,6 +1868,8 @@ def run_main(ctx: BillingContext) -> None:
                         # スプレッドシートがDate型で返す場合（「2026年1月」→ 2026-01-01）
                         year, month = str(raw_val.year), str(raw_val.month).zfill(2)
                         log.info(f"対象月（設定シートから取得・Date型）: {year}年{month}月")
+                    elif "自動" in val or "前月" in val:
+                        pass  # デフォルト（前月）をそのまま使用
                     else:
                         log.warning(f"対象月の値を解析できません: '{val}' (型: {type(raw_val).__name__})")
                     break
