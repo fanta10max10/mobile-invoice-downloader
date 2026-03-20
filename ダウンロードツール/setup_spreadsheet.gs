@@ -316,7 +316,6 @@ function _getPhoneManagerHtml_() {
         phoneData = r.phones;
         var savedSelections = r.selections;
         document.getElementById("targetMonth").textContent = "対象月: " + (r.targetMonth || "");
-        if (r.debug) document.getElementById("targetMonth").textContent += " [" + r.debug + "]";
         // 全番号を初期選択（既存の選択があればPDFの種類を復元）
         selections = { SoftBank: {}, Ymobile: {}, au: {}, UQmobile: {} };
         ["SoftBank", "Ymobile", "au", "UQmobile"].forEach(function(c) {
@@ -449,17 +448,10 @@ function getPhoneManagerData() {
   _clearSettingsCache_();
   try {
     const target = _getTargetMonth_();
-    const targetNum = target.year * 100 + target.month;
-    const phoneResult = _getAllPhonesFromMonthSheets_();
-    // デバッグ: 設定値・対象月・シート情報を返す
-    const settingRaw = String(_getSettingValue_("対象月") || "");
     return {
-      phones: phoneResult.phones,
+      phones: _getAllPhonesFromMonthSheets_(),
       selections: _getCurrentSelections_(),
       targetMonth: target.year + "年" + target.month + "月",
-      debug: "設定値=[" + settingRaw + "] targetNum=" + targetNum
-        + " sheets=[" + (phoneResult._debugSheets || []).join(", ") + "]"
-        + " matched=[" + (phoneResult._debugMatched || "none") + "]",
     };
   } catch (e) {
     Logger.log(`[getPhoneManagerData] エラー: ${e.message}\n${e.stack}`);
@@ -476,7 +468,7 @@ function getPhoneManagerData() {
 function savePhoneSelections(selections) {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const allPhones = _getAllPhonesFromMonthSheets_().phones;
+    const allPhones = _getAllPhonesFromMonthSheets_();
 
     // 解約済番号セット・運用端末・名義マップ
     const cancelledSet = new Set();
@@ -667,8 +659,7 @@ function _getTargetMonth_() {
  * セクション分け構造に対応（キャリアラベル行 → ヘッダー行 → データ行）。
  */
 function _getAllPhonesFromMonthSheets_() {
-  const phones = { SoftBank: [], Ymobile: [], au: [], UQmobile: [] };
-  const result = { phones, _debugSheets: [], _debugMatched: "none" };
+  const result = { SoftBank: [], Ymobile: [], au: [], UQmobile: [] };
 
   let ss;
   const mgmtUrl = _getSettingValue_("回線管理スプレッドシート");
@@ -688,9 +679,6 @@ function _getAllPhonesFromMonthSheets_() {
   const targetNum = target.year * 100 + target.month;
   monthSheets.sort((a, b) => _parseMonthSheetNum_(a.getName()) - _parseMonthSheetNum_(b.getName()));
 
-  // デバッグ: 各シート名とparseNum
-  result._debugSheets = monthSheets.map(s => s.getName() + "=" + _parseMonthSheetNum_(s.getName()));
-
   let targetSheet = null;
   for (const sheet of monthSheets) {
     if (_parseMonthSheetNum_(sheet.getName()) === targetNum) {
@@ -705,7 +693,6 @@ function _getAllPhonesFromMonthSheets_() {
     }
   }
   if (!targetSheet || targetSheet.getLastRow() <= 1) return result;
-  result._debugMatched = targetSheet.getName();
 
   const rows = targetSheet.getDataRange().getValues();
   let cols = null, sectionCarrier = null;
@@ -732,7 +719,7 @@ function _getAllPhonesFromMonthSheets_() {
 
     let carrier = cols["キャリア"] !== undefined ? _normalizeCarrierName_(row[cols["キャリア"]]) : null;
     if (!carrier) carrier = sectionCarrier;
-    if (!carrier || !phones[carrier]) continue;
+    if (!carrier || !result[carrier]) continue;
 
     const ci = cols["解約済"];
     const cancelled = ci !== undefined && String(row[ci] || "").toUpperCase() === "TRUE";
@@ -743,8 +730,8 @@ function _getAllPhonesFromMonthSheets_() {
     const ii = cols["ID"];
     const loginId = ii !== undefined ? String(row[ii] || "").trim() : "";
 
-    if (!phones[carrier].some(p => p.phone === phone)) {
-      phones[carrier].push({ phone, cancelled, device, name, loginId });
+    if (!result[carrier].some(p => p.phone === phone)) {
+      result[carrier].push({ phone, cancelled, device, name, loginId });
     }
   }
   return result;
