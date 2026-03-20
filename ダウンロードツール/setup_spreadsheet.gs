@@ -73,12 +73,6 @@ function setupSheet() {
   setupLinkSheet_(ss, UQMOBILE_LINK_SHEET_NAME, "UQmobile");
   setupHistorySheet_(ss);
 
-  // 旧シートの削除
-  for (const name of ["_PhoneDropdown", "回線管理表", "シート1"]) {
-    const old = ss.getSheetByName(name);
-    if (old) ss.deleteSheet(old);
-  }
-
   SpreadsheetApp.getUi().alert(
     "セットアップ完了",
     "設定・認証情報・リンクシートを作成しました。\n\n" +
@@ -139,21 +133,11 @@ function setupAuthSheet_(ss) {
     ss.moveActiveSheet(2);
   }
 
-  // ヘッダーを正しい6列に設定（旧形式からの移行対応）
+  // ヘッダーが正しくなければ上書き
   const correctHeaders = ["電話番号", "キャリア", "PDFの種類", "運用端末", "状態", "ログインID"];
-  const currentHeaders = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0]
-    .map(h => String(h || "").trim());
-
-  // パスワード列が残っていたら削除
-  const pwIdx = currentHeaders.indexOf("パスワード");
-  if (pwIdx !== -1) {
-    sheet.deleteColumn(pwIdx + 1);
-  }
-
-  // ヘッダーが正しくなければ上書き（旧 "au ID" からの自動マイグレーション含む）
   const h0 = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0]
     .map(v => String(v || "").trim());
-  if (h0.length < 6 || h0[0] !== "電話番号" || h0[1] !== "キャリア" || h0[3] !== "運用端末" || h0[4] !== "状態" || h0[5] !== "ログインID") {
+  if (h0.length < 6 || h0[0] !== "電話番号" || h0[5] !== "ログインID") {
     sheet.getRange(1, 1, 1, 6).setValues([correctHeaders])
       .setFontWeight("bold").setBackground("#4285F4").setFontColor("#FFFFFF").setHorizontalAlignment("center");
   }
@@ -190,7 +174,7 @@ function setupAuthSheet_(ss) {
 function setupLinkSheet_(ss, sheetName, carrierLabel) {
   let sheet = ss.getSheetByName(sheetName);
   if (!sheet) sheet = ss.insertSheet(sheetName);
-  // ヘッダーを常に正しい値に設定（旧「PDFの種類」→「名義」の移行対応）
+  // ヘッダー設定
   const color = carrierLabel === "SoftBank" ? "#4285F4" : "#FF6D00";
   sheet.getRange(1, 1, 1, 2).setValues([["電話番号", "名義"]])
     .setFontWeight("bold").setBackground(color).setFontColor("#FFFFFF").setHorizontalAlignment("center");
@@ -1030,7 +1014,7 @@ function _collectCarrierPdfs_(folder, carrier, results) {
   while (files.hasNext()) {
     const file = files.next();
     if (file.getMimeType() !== "application/pdf") continue;
-    // 新形式: YYYYMM_会社名_phone_... / 旧形式: YYYYMM_carrier_phone_...
+    // YYYYMM_会社名_電話番号_...
     const m = file.getName().match(/^(\d{4})(\d{2})_[^_]+_(\d{10,})/);
     if (m) results.push({ year: m[1], month: m[2], phone: m[3], file });
   }

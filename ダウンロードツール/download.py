@@ -165,7 +165,7 @@ def update_amounts():
     failed = 0
     for f, carrier_folder in targets:
         name = f["name"]
-        # ファイル名パース: YYYYMM_*_phone_*.pdf から電話番号を抽出
+        # ファイル名パース: YYYYMM_会社名_電話番号_*.pdf
         m = re.match(r"(\d{6})_.+?_(\d{10,})_.+\.pdf", name)
         if not m:
             continue

@@ -699,7 +699,7 @@ def load_accounts(ctx: BillingContext) -> pd.DataFrame:
             device = str(row.get("運用端末", "")).strip()
             if device:
                 ctx.phone_device_map[phone] = device
-            login_id = str(row.get("ログインID", "") or row.get("au ID", "")).strip()
+            login_id = str(row.get("ログインID", "")).strip()
             if login_id:
                 ctx.phone_login_id_map[phone] = login_id
         if ctx.phone_device_map:
