@@ -1069,24 +1069,36 @@ function _extractAmountFromPdf_(file, phone) {
 
     // au/UQmobile: 電話番号が指定された場合、その番号の個別金額を取得
     if (phone) {
-      // 電話番号のフォーマットを全角ハイフン付きに変換（OCRテキストは全角）
-      const p = phone.replace(/^0/, "０").replace(/(\d)/g, c => String.fromCharCode(c.charCodeAt(0) + 0xFEE0));
-      const formatted = p.slice(0, 3) + "－" + p.slice(3, 7) + "－" + p.slice(7);
-      // 「０８０－２６６３－６３２８」の後の金額パターンを検索
-      // パターン1: 電話番号の後に ( 1,851 ) 形式
-      const escPhone = formatted.replace(/[－]/g, "[－\\-]");
-      const pat1 = new RegExp(escPhone + "[^\\d]*?[\\(（]\\s*([\\d,，]+)\\s*[\\)）]");
-      const m1 = text.match(pat1);
-      if (m1) { const a = m1[1].replace(/[,，]/g, ""); if (/^\d+$/.test(a)) return a; }
-      // パターン2: 半角数字版
-      const halfPhone = phone.replace(/(\d{3})(\d{4})(\d{4})/, "$1-$2-$3");
-      const pat2 = new RegExp(halfPhone.replace(/-/g, "[－\\-]") + "[^\\d]*?[\\(（]\\s*([\\d,，]+)\\s*[\\)）]");
-      const m2 = text.match(pat2);
-      if (m2) { const a = m2[1].replace(/[,，]/g, ""); if (/^\d+$/.test(a)) return a; }
-      Logger.log(`[OCR] au/UQ phone=${phone} formatted=${formatted} not found in text`);
+      // 電話番号の各種フォーマットを生成
+      const digits = phone.replace(/\D/g, "");
+      // 全角版: ０８０－２６６３－６３２８
+      const fw = digits.replace(/\d/g, c => String.fromCharCode(c.charCodeAt(0) + 0xFEE0));
+      const fwFormatted = fw.slice(0, 3) + "－" + fw.slice(3, 7) + "－" + fw.slice(7);
+      // 半角版: 080-2663-6328
+      const hwFormatted = digits.slice(0, 3) + "-" + digits.slice(3, 7) + "-" + digits.slice(7);
+
+      Logger.log(`[OCR] au/UQ searching for phone: ${fwFormatted} or ${hwFormatted}`);
+      Logger.log(`[OCR] text length: ${text.length}, first 300 chars: ${text.substring(0, 300)}`);
+
+      // ハイフンは全角・半角どちらもマッチ
+      const phoneVariants = [fwFormatted, hwFormatted];
+      for (const ph of phoneVariants) {
+        const escPh = ph.replace(/[－\-]/g, "[－\\-]");
+        // パターン1: 電話番号の後に ( 1,851 ) 形式（括弧付き）
+        const pat1 = new RegExp(escPh + "[\\s\\S]{0,30}?[\\(（]\\s*([\\d,，]+)\\s*[\\)）]");
+        const m1 = text.match(pat1);
+        if (m1) { const a = m1[1].replace(/[,，]/g, ""); if (/^\d+$/.test(a) && a.length <= 7) return a; }
+        // パターン2: 電話番号の後に直接金額（カンマ区切り数値）
+        const pat2 = new RegExp(escPh + "[\\s\\S]{0,30}?\\b([\\d,，]{3,7})\\b");
+        const m2 = text.match(pat2);
+        if (m2) { const a = m2[1].replace(/[,，]/g, ""); if (/^\d+$/.test(a) && a.length <= 6) return a; }
+      }
+      Logger.log(`[OCR] au/UQ phone=${phone} not found in OCR text`);
+      // au/UQでは「計」パターンにフォールバックしない（まとめ請求のため誤マッチ防止）
+      return null;
     }
 
-    // SoftBank/Ymobile（またはau/UQで番号が見つからない場合のフォールバック）: 「計」の後の金額
+    // SoftBank/Ymobile: 「計」の後の金額
     for (const pat of [/(?<![小合])計[^\d]*([\d,]+)/, /小計[^\d]*([\d,]+)/]) {
       const m = text.match(pat);
       if (m) { const a = m[1].replace(/,/g, ""); if (/^\d+$/.test(a)) return a; }
