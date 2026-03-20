@@ -642,7 +642,12 @@ function _normalizeCarrierName_(text) {
  * 返却値: { year: number, month: number } (例: { year: 2026, month: 1 })
  */
 function _getTargetMonth_() {
-  const val = String(_getSettingValue_("対象月") || "").trim();
+  const raw = _getSettingValue_("対象月");
+  // Date型（スプレッドシートが「2026年1月」をDateに変換する場合）
+  if (raw instanceof Date) {
+    return { year: raw.getFullYear(), month: raw.getMonth() + 1 };
+  }
+  const val = String(raw || "").trim();
   // YYYYMM形式
   const m1 = val.match(/^(\d{4})(\d{2})$/);
   if (m1) return { year: parseInt(m1[1]), month: parseInt(m1[2]) };
@@ -1015,7 +1020,9 @@ function _getSettingValue_(key) {
     _settingsCache = {};
     for (let i = 1; i < data.length; i++) {
       const k = String(data[i][0]).trim();
-      const v = String(data[i][1]).trim() || null;
+      const raw = data[i][1];
+      // Date型はそのまま保持（対象月のドロップダウンがDateに変換されるため）
+      const v = (raw instanceof Date) ? raw : (String(raw).trim() || null);
       if (k) _settingsCache[k] = v;
     }
   }
