@@ -856,7 +856,14 @@ function _updatePdfLinks_(sheetName, carrier, silent = false, force = false) {
     }
   }
 
-  if (pdfEntries.length === 0) {
+  // リンク対象は請求書/電話番号別のみ（領収書・支払証明書・一括・機種別は除外）
+  const excludeSuffixes = ["_領収書.pdf", "_支払証明書.pdf", "_一括.pdf", "_機種別.pdf"];
+  const linkEntries = pdfEntries.filter(e => {
+    const name = e.file.getName();
+    return !excludeSuffixes.some(s => name.endsWith(s));
+  });
+
+  if (linkEntries.length === 0) {
     if (!silent) SpreadsheetApp.getUi().alert("情報", `${carrier}のPDFが見つかりません。`, SpreadsheetApp.getUi().ButtonSet.OK);
     return { pdfs: 0, updated: 0, newPhones: 0 };
   }
@@ -870,7 +877,7 @@ function _updatePdfLinks_(sheetName, carrier, silent = false, force = false) {
   }
 
   // PDFに含まれるがリンクシートにない電話番号を自動追加（名義は認証情報から取得不可のため空欄）
-  const newPhones = [...new Set(pdfEntries.map(e => e.phone))].filter(ph => !phoneToRow[ph]);
+  const newPhones = [...new Set(linkEntries.map(e => e.phone))].filter(ph => !phoneToRow[ph]);
   for (const ph of newPhones) {
     const row = sheet.getLastRow() + 1;
     sheet.getRange(row, 1).setNumberFormat("@").setValue(ph);
@@ -879,25 +886,16 @@ function _updatePdfLinks_(sheetName, carrier, silent = false, force = false) {
   }
 
   // 月列を確保
-  const neededHeaders = [...new Set(pdfEntries.map(e => `${e.year}年${parseInt(e.month)}月`))];
+  const neededHeaders = [...new Set(linkEntries.map(e => `${e.year}年${parseInt(e.month)}月`))];
   neededHeaders.sort((a, b) => _monthHeaderToNum_(b) - _monthHeaderToNum_(a));
   for (const h of neededHeaders) _ensureMonthColumn_(sheet, h);
 
-  // リンク書き込み
+  // リンク書き込み（1電話番号×1月につき1リンク）
   let added = 0, overwritten = 0;
-  const processed = new Set();
-  for (const entry of pdfEntries) {
+  for (const entry of linkEntries) {
     const rowNum = phoneToRow[entry.phone];
     const colNum = _getMonthColumnNum_(sheet, entry.year, entry.month);
     if (!rowNum || !colNum) continue;
-
-    const key = `${entry.phone}_${entry.year}${entry.month}`;
-    if (processed.has(key)) {
-      const cell = sheet.getRange(rowNum, colNum);
-      cell.setNote((cell.getNote() || "") + (cell.getNote() ? "\n" : "") + entry.file.getName());
-      continue;
-    }
-    processed.add(key);
 
     const cell = sheet.getRange(rowNum, colNum);
     const hasFormula = !!cell.getFormula();
@@ -909,8 +907,8 @@ function _updatePdfLinks_(sheetName, carrier, silent = false, force = false) {
     if (hasFormula) { overwritten++; } else { added++; }
   }
 
-  if (!silent) _showLinkUpdateResult_(pdfEntries.length, added, overwritten, newPhones.length, force);
-  return { pdfs: pdfEntries.length, added, overwritten, newPhones: newPhones.length };
+  if (!silent) _showLinkUpdateResult_(linkEntries.length, added, overwritten, newPhones.length, force);
+  return { pdfs: linkEntries.length, added, overwritten, newPhones: newPhones.length };
 }
 
 
