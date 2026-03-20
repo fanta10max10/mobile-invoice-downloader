@@ -48,9 +48,10 @@
 ├── 2026/                          # 領収書PDF（年別フォルダ）
 ├── README.md                      # プロジェクト全体のREADME
 ├── ダウンロードツール/              # スクリプト・設定一式
-│   ├── download.py                # 統合エントリポイント
+│   ├── download.py                # 統合エントリポイント（--update-amounts で金額更新）
+│   ├── update_amounts.py          # 金額更新の個別スクリプト（download.pyのラッパー）
 │   ├── shared_utils.py            # 全ロジック集約
-│   ├── setup_spreadsheet.gs       # GASコード
+│   ├── setup_spreadsheet.gs       # GASコード（リンクシート更新のみ）
 │   ├── CLAUDE.md                  # このファイル
 │   ├── 仕様書.md                  # 詳細仕様
 │   ├── requirements.txt
