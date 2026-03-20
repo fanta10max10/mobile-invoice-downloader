@@ -1686,13 +1686,20 @@ def run_main(ctx: BillingContext) -> None:
             ws = sh.worksheet("設定")
             for row in ws.get_all_records():
                 if str(row.get("設定名", "")).strip() == "対象月":
-                    val = str(row.get("値", "")).strip()
+                    raw_val = row.get("値", "")
+                    val = str(raw_val).strip()
                     if re.match(r"^\d{6}$", val):
                         year, month = val[:4], val[4:6]
                         log.info(f"対象月（設定シートから取得）: {year}年{month}月")
                     elif m2 := re.match(r"^(\d{4})年(\d+)月$", val):
                         year, month = m2.group(1), m2.group(2).zfill(2)
                         log.info(f"対象月（設定シートから取得）: {year}年{month}月")
+                    elif isinstance(raw_val, datetime):
+                        # スプレッドシートがDate型で返す場合（「2026年1月」→ 2026-01-01）
+                        year, month = str(raw_val.year), str(raw_val.month).zfill(2)
+                        log.info(f"対象月（設定シートから取得・Date型）: {year}年{month}月")
+                    else:
+                        log.warning(f"対象月の値を解析できません: '{val}' (型: {type(raw_val).__name__})")
                     break
         except RecursionError:
             raise
@@ -1796,9 +1803,10 @@ def run_main(ctx: BillingContext) -> None:
     failed = [p for p, r in results if r == "failed"]
     if failed:
         log.warning(f"{len(failed)} 件の失敗がありました")
-        sys.exit(1)
     else:
         log.info("全回線の処理が正常に完了しました")
+
+    return len(failed)
 
 
 # ══════════════════════════════════════════════════════════

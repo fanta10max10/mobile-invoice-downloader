@@ -6,6 +6,7 @@
   python3 download.py
 """
 
+import sys
 from pathlib import Path
 
 from shared_utils import CarrierConfig, create_billing_context, run_main
@@ -69,9 +70,12 @@ ALL_CARRIERS = [SOFTBANK_CONFIG, YMOBILE_CONFIG, AU_CONFIG, UQ_CONFIG]
 
 def main():
     script_dir = Path(__file__).resolve().parent
+    total_failed = 0
     for config in ALL_CARRIERS:
         ctx = create_billing_context(config, script_dir=script_dir)
-        run_main(ctx)
+        total_failed += run_main(ctx) or 0
+    if total_failed > 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
