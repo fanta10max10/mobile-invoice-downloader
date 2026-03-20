@@ -1,9 +1,13 @@
 """
 携帯領収書管理 共通ユーティリティ
 
-SoftBank・Ymobile 両スクリプトから共通で使用する関数群。
+SoftBank・Ymobile・au・UQmobile から共通で使用する関数群。
 CarrierConfig / BillingContext を中心にすべてのロジックを集約し、
 各キャリアスクリプトは薄いラッパーとして動作する。
+
+carrier_family による分岐:
+  - "softbank": SoftBank / Ymobile（WCOシステム経由のPDFダウンロード）
+  - "au": au / UQmobile（WEB de 請求書経由のPDFダウンロード）
 """
 
 import json
@@ -48,16 +52,22 @@ USER_AGENT = (
 @dataclass(frozen=True)
 class CarrierConfig:
     """キャリア固有の定数群"""
-    carrier_name: str           # "SoftBank" or "Ymobile"
-    display_name: str           # "My SoftBank" or "My Y!mobile"
-    auth_domain: str            # "id.my.softbank.jp" or "id.my.ymobile.jp"
+    carrier_name: str           # "SoftBank", "Ymobile", "au", "UQmobile"
+    display_name: str           # "My SoftBank", "My Y!mobile", "My au", "My UQ mobile"
+    auth_domain: str            # "id.my.softbank.jp", "id.my.ymobile.jp", "connect.auone.jp"
     login_url: str
-    wco_base: str
-    certificate_url: str
-    bill_pdf_url: str
-    code_file_prefix: str       # "softbank" or "ymobile"
+    code_file_prefix: str       # "softbank", "ymobile", "au", "uqmobile"
     session_file_prefix: str
-    temp_dir_prefix: str        # "softbank_pdf_" or "ymobile_pdf_"
+    temp_dir_prefix: str        # "softbank_pdf_", "ymobile_pdf_", "au_pdf_", "uqmobile_pdf_"
+    carrier_family: str = "softbank"  # "softbank" or "au" — ログイン・PDF取得フローの分岐に使用
+    # SoftBank/Ymobile 固有（WCOシステム）
+    wco_base: str = ""
+    certificate_url: str = ""
+    bill_pdf_url: str = ""
+    # au/UQ 固有
+    au_billing_top_url: str = ""      # WEB de 請求書トップページ
+    au_pin_setting_name: str = ""     # 設定シートの暗証番号キー名
+    password_setting_name: str = "パスワード"  # 設定シートのパスワードキー名
 
 
 @dataclass
@@ -126,16 +136,21 @@ def strip_hyphens(phone: str) -> str:
 #  PDFの種類パース
 # ══════════════════════════════════════════════════════════
 
-def parse_pdf_types(raw: str) -> set[str]:
+def parse_pdf_types(raw: str, carrier_family: str = "softbank") -> set[str]:
     """PDFの種類列の値をパースしてセットで返す。"""
-    valid = {"電話番号別", "一括", "機種別"}
+    if carrier_family == "au":
+        valid = {"請求書", "領収書", "支払証明書"}
+        default = {"請求書"}
+    else:
+        valid = {"電話番号別", "一括", "機種別"}
+        default = {"電話番号別"}
     if not raw or str(raw).strip().lower() in ("nan", ""):
-        return {"電話番号別"}
+        return default
     types = {t.strip() for t in str(raw).split(",") if t.strip()}
     result = types & valid
     if not result:
-        log.warning(f"  PDFの種類 '{raw}' に有効な値がありません。デフォルト '電話番号別' を使用します。")
-        return {"電話番号別"}
+        log.warning(f"  PDFの種類 '{raw}' に有効な値がありません。デフォルト '{', '.join(default)}' を使用します。")
+        return default
     return result
 
 
@@ -214,12 +229,12 @@ def open_sheet(gc: gspread.Client, spreadsheet_id: str) -> gspread.Spreadsheet:
 #  設定シート読み取り
 # ══════════════════════════════════════════════════════════
 
-def load_password_from_settings(sh) -> "str | None":
-    """設定シートから共通パスワードを取得する。"""
+def load_password_from_settings(sh, setting_name: str = "パスワード") -> "str | None":
+    """設定シートからパスワードを取得する。setting_name で取得するキーを指定可能。"""
     try:
         ws = sh.worksheet("設定")
         for row in ws.get_all_records():
-            if str(row.get("設定名", "")).strip() == "パスワード":
+            if str(row.get("設定名", "")).strip() == setting_name:
                 pw = str(row.get("値", "")).strip()
                 if pw:
                     return pw
@@ -628,11 +643,11 @@ def load_accounts(ctx: BillingContext) -> pd.DataFrame:
     gc = get_gspread_client()
     sh = open_sheet(gc, ctx.spreadsheet_id)
 
-    common_password = load_password_from_settings(sh)
+    common_password = load_password_from_settings(sh, ctx.config.password_setting_name)
     if not common_password:
         log.error(
-            "パスワードが設定されていません。\n"
-            "  設定シートの「パスワード」行にログインパスワードを入力してください。"
+            f"パスワードが設定されていません。\n"
+            f"  設定シートの「{ctx.config.password_setting_name}」行にログインパスワードを入力してください。"
         )
         sys.exit(1)
 
@@ -1179,6 +1194,8 @@ def _navigate_to_pdf_page(ctx: BillingContext, page) -> None:
 
 def do_login_and_navigate(ctx: BillingContext, page, phone_number: str, password: str) -> bool:
     """ログイン → 2FA → PDFダウンロードページまで一気に遷移する。"""
+    if ctx.config.carrier_family == "au":
+        return _do_au_login_and_navigate(ctx, page, phone_number, password)
     bill_pdf_url = ctx.config.bill_pdf_url
     wco_base_domain = ctx.config.wco_base.replace("https://", "")
 
@@ -1362,8 +1379,10 @@ def do_login_and_navigate(ctx: BillingContext, page, phone_number: str, password
 #  月選択・PDFダウンロード
 # ══════════════════════════════════════════════════════════
 
-def select_target_month(page, year: str, month: str) -> bool:
-    """PDFページで対象月をコンボボックスから選択する。"""
+def select_target_month(ctx: BillingContext, page, year: str, month: str) -> bool:
+    """PDFページで対象月を選択する。"""
+    if ctx.config.carrier_family == "au":
+        return _au_select_target_month(ctx, page, year, month)
     target_value = f"{year}{month}"
     target_label = f"{year}年{month}月"
     log.info(f"対象月を選択中: {target_label} (value={target_value})")
@@ -1438,6 +1457,8 @@ def download_pdf_from_page(
     pdf_types: set[str] | None = None,
 ) -> bool:
     """PDFダウンロードページから指定種別のPDFをダウンロードする。"""
+    if ctx.config.carrier_family == "au":
+        return _au_download_pdf_from_page(ctx, page, save_dir, year, month, phone, pdf_types)
     if pdf_types is None:
         pdf_types = {"電話番号別"}
 
@@ -1557,7 +1578,7 @@ def download_billing_pdf(
             except Exception as e:
                 log.warning(f"  セッション保存に失敗: {e}")
 
-            if not select_target_month(page, year, month):
+            if not select_target_month(ctx, page, year, month):
                 _save_debug_screenshot(
                     ctx, page, save_dir, phone_number, year, month,
                     "月選択失敗", f"対象月 {year}{month} の選択に失敗しました",
@@ -1644,7 +1665,7 @@ def run_main(ctx: BillingContext) -> None:
         log.info(f"  対象回線: {len(accounts)} 件")
         for _, row in accounts.iterrows():
             phone = str(row["電話番号"]).strip()
-            pdf_types_r = parse_pdf_types(row.get("PDFの種類", "電話番号別"))
+            pdf_types_r = parse_pdf_types(row.get("PDFの種類", ""), ctx.config.carrier_family)
             log.info(f"    {phone} ({', '.join(pdf_types_r)})")
         if ctx.drive_ctx:
             try:
@@ -1679,7 +1700,7 @@ def run_main(ctx: BillingContext) -> None:
     for _, row in accounts.iterrows():
         phone = str(row["電話番号"]).strip()
         pw = str(row["パスワード"]).strip()
-        pdf_types = parse_pdf_types(row.get("PDFの種類", "電話番号別"))
+        pdf_types = parse_pdf_types(row.get("PDFの種類", ""), ctx.config.carrier_family)
 
         result = download_billing_pdf(ctx, phone, pw, year, month, save_dir, pdf_types)
         results.append((phone, result))
@@ -1716,3 +1737,407 @@ def run_main(ctx: BillingContext) -> None:
         sys.exit(1)
     else:
         log.info("全回線の処理が正常に完了しました")
+
+
+# ══════════════════════════════════════════════════════════
+#  au / UQmobile 固有ロジック
+# ══════════════════════════════════════════════════════════
+
+def _is_on_au_auth_page(ctx: BillingContext, page) -> bool:
+    """au の認証ページ上にいるか判定する"""
+    url = page.url
+    return "connect.auone.jp" in url or "id.auone.jp" in url
+
+
+def _do_au_login_and_navigate(ctx: BillingContext, page, phone_number: str, password: str) -> bool:
+    """au ID でログイン → WEB de 請求書ページまで遷移する。"""
+
+    # Step 1: WEB de 請求書ページにアクセス（ログインページにリダイレクトされる）
+    billing_url = ctx.config.au_billing_top_url or ctx.config.login_url
+    log.info(f"WEB de 請求書ページにアクセス中: {billing_url}")
+    retry_with_backoff(
+        lambda: page.goto(billing_url, wait_until="networkidle"),
+        max_retries=3, retryable_exceptions=(PlaywrightTimeout, ConnectionError), logger=log,
+    )
+    page.wait_for_load_state("networkidle")
+    time.sleep(2)
+    log.info(f"  リダイレクト先URL: {page.url}")
+
+    if not _is_on_au_auth_page(ctx, page):
+        log.info("  認証なしでページに到達しました")
+        return True
+
+    # Step 2: au ID ログイン（2ステップ: ID入力 → パスワード入力）
+    log.info("au ID ログイン情報を入力中...")
+    try:
+        # au ID（電話番号）入力
+        id_input = (
+            page.locator('#loginAliasId')
+            .or_(page.locator('input[name="loginAliasId"]'))
+            .or_(page.locator('input[name="username"]'))
+            .or_(page.locator('input[type="text"]').first)
+        )
+        id_input.first.wait_for(state="visible", timeout=10000)
+        id_input.first.fill(phone_number)
+        log.info("  au IDを入力しました")
+
+        # 「次へ」ボタンをクリック（au IDは2ステップログイン）
+        next_btn = (
+            page.locator('#btn_idInput')
+            .or_(page.get_by_text("次へ", exact=False))
+            .or_(page.locator('button[type="submit"]'))
+        )
+        try:
+            if next_btn.first.is_visible(timeout=3000):
+                next_btn.first.click()
+                page.wait_for_load_state("networkidle")
+                time.sleep(2)
+                log.info("  「次へ」をクリックしました")
+        except Exception:
+            pass  # シングルステップの場合はスキップ
+
+        # パスワード入力
+        pw_input = (
+            page.locator('#loginAuonePwd')
+            .or_(page.locator('input[name="loginAuonePwd"]'))
+            .or_(page.locator('input[type="password"]'))
+        )
+        pw_input.first.wait_for(state="visible", timeout=10000)
+        pw_input.first.fill(password)
+        log.info("  パスワードを入力しました")
+
+        # ログインボタンクリック
+        login_btn = (
+            page.locator('#btn_pwdLogin')
+            .or_(page.get_by_text("ログイン", exact=False))
+            .or_(page.locator('input[type="submit"]'))
+            .or_(page.locator('button[type="submit"]'))
+        )
+        _click_any_button(page, login_btn, "ログインボタン", text_hint="ログイン")
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        time.sleep(3)
+        log.info(f"  ログイン後のURL: {page.url}")
+
+    except (PlaywrightTimeout, Exception) as e:
+        log.error(f"  au IDログインフォームの操作に失敗: {e}")
+        return False
+
+    # Step 3: 2段階認証（SMS確認コードまたはワンタイムURL）
+    if _is_on_au_auth_page(ctx, page):
+        page_text = _get_page_text(page)
+
+        # SMS確認コード入力
+        if "確認コード" in page_text or "セキュリティ" in page_text or "認証" in page_text:
+            log.info("  au 2段階認証を検出しました")
+            if not _handle_au_2fa(ctx, page, phone_number):
+                return False
+        else:
+            # ワンタイムURL方式の場合、ユーザーにSMSのURLをタップするよう案内
+            log.info("  au認証ページにいます。ワンタイムURL方式の可能性があります")
+            log.info("  SMSに届いたURLをタップして認証を完了してください")
+            # URLタップ後のページ遷移を待機
+            try:
+                page.wait_for_url(lambda url: "connect.auone.jp" not in url and "id.auone.jp" not in url,
+                                  timeout=ctx.security_code_timeout * 1000)
+                log.info(f"  認証完了: {page.url}")
+            except PlaywrightTimeout:
+                log.error("  au 2段階認証がタイムアウトしました")
+                return False
+
+    # Step 4: 暗証番号（4桁PIN）が必要な場合
+    page_text = _get_page_text(page)
+    if "暗証番号" in page_text:
+        log.info("  暗証番号の入力を検出しました")
+        pin = _load_au_pin(ctx)
+        if not pin:
+            log.error(
+                "au暗証番号が設定されていません。\n"
+                f"  設定シートの「{ctx.config.au_pin_setting_name}」行に4桁の暗証番号を入力してください。"
+            )
+            return False
+        pin_input = (
+            page.locator('input[type="password"]')
+            .or_(page.locator('input[type="tel"]'))
+            .or_(page.locator('input[maxlength="4"]'))
+        )
+        try:
+            pin_input.first.wait_for(state="visible", timeout=5000)
+            pin_input.first.fill(pin)
+            submit_btn = page.locator('input[type="submit"]').or_(page.locator('button[type="submit"]'))
+            _click_any_button(page, submit_btn, "暗証番号送信ボタン")
+            page.wait_for_load_state("networkidle")
+            time.sleep(2)
+            log.info("  暗証番号を入力しました")
+        except Exception as e:
+            log.error(f"  暗証番号の入力に失敗: {e}")
+            return False
+
+    # Step 5: WEB de 請求書ページへの到達確認
+    final_url = page.url
+    log.info(f"  最終URL: {final_url}")
+
+    if _is_on_au_auth_page(ctx, page):
+        log.error("  au認証を完了できませんでした")
+        return False
+
+    # 請求書ページにいるか確認（チェックボックスまたは「請求書」テキストを探す）
+    try:
+        page_text = _get_page_text(page)
+        if "請求書" in page_text or "請求" in page_text:
+            log.info("  WEB de 請求書ページに到達しました")
+            return True
+    except Exception:
+        pass
+
+    # 請求書ページではない場合、WEB de 請求書へ遷移を試みる
+    if ctx.config.au_billing_top_url:
+        log.info(f"  WEB de 請求書ページへ遷移を試みます: {ctx.config.au_billing_top_url}")
+        try:
+            page.goto(ctx.config.au_billing_top_url, wait_until="networkidle")
+            time.sleep(2)
+            page_text = _get_page_text(page)
+            if "請求書" in page_text or "請求" in page_text:
+                log.info("  WEB de 請求書ページに到達しました")
+                return True
+        except Exception:
+            pass
+
+    log.warning(f"  WEB de 請求書ページへの到達を確認できませんでした (URL: {final_url})")
+    # 到達を仮定して続行（実際のページ構造は要確認）
+    return True
+
+
+def _handle_au_2fa(ctx: BillingContext, page, phone_number: str) -> bool:
+    """au 2段階認証の確認コード入力を処理する。"""
+    for attempt in range(8):
+        page_text = _get_page_text(page)
+
+        if not _is_on_au_auth_page(ctx, page):
+            log.info("  au 2段階認証完了")
+            return True
+
+        # 確認コード入力欄を検出
+        code_input = (
+            page.locator('#confirmcode')
+            .or_(page.locator('input[name="confirmcode"]'))
+            .or_(page.locator('input[name="otp"]'))
+            .or_(page.locator('input[maxlength="6"]'))
+            .or_(page.locator('input[maxlength="4"]'))
+        )
+        try:
+            if code_input.first.is_visible(timeout=3000):
+                code = ask_security_code(ctx, phone_number)
+                if not code:
+                    return False
+                code_input.first.fill(code)
+                log.info("  確認コードを入力しました")
+
+                submit_btn = (
+                    page.locator('input[type="submit"]')
+                    .or_(page.locator('button[type="submit"]'))
+                    .or_(page.get_by_text("OK", exact=True))
+                    .or_(page.get_by_text("送信", exact=False))
+                )
+                _click_any_button(page, submit_btn, "確認コード送信ボタン")
+                page.wait_for_load_state("networkidle")
+                time.sleep(3)
+
+                if not _is_on_au_auth_page(ctx, page):
+                    log.info("  au 2段階認証完了")
+                    return True
+                continue
+        except Exception:
+            pass
+
+        # 「許可する」「次へ」等のボタンを検出
+        try:
+            allow_btn = (
+                page.get_by_text("許可する", exact=False)
+                .or_(page.get_by_text("許可", exact=True))
+                .or_(page.get_by_text("次へ", exact=False))
+            )
+            if allow_btn.first.is_visible(timeout=2000):
+                allow_btn.first.click()
+                page.wait_for_load_state("networkidle")
+                time.sleep(2)
+                continue
+        except Exception:
+            pass
+
+        time.sleep(3)
+
+    log.error("  au 2段階認証: 最大試行回数に到達")
+    return False
+
+
+def _load_au_pin(ctx: BillingContext) -> "str | None":
+    """設定シートからau暗証番号を取得する。"""
+    if not ctx.config.au_pin_setting_name:
+        return None
+    try:
+        gc = get_gspread_client()
+        sh = open_sheet(gc, ctx.spreadsheet_id)
+        return load_password_from_settings(sh, ctx.config.au_pin_setting_name)
+    except Exception:
+        return None
+
+
+def _au_select_target_month(ctx: BillingContext, page, year: str, month: str) -> bool:
+    """au WEB de 請求書で対象月のチェックボックスを選択する。"""
+    target_ym = f"{year}{month}"
+    target_label = f"{year}年{month}月"
+    target_label_alt = f"{year}年{int(month)}月"  # "2026年2月" 形式
+    log.info(f"対象月を選択中: {target_label} (au WEB de 請求書)")
+
+    try:
+        # まず全チェックボックスを外す
+        checkboxes = page.locator('input[type="checkbox"]')
+        for i in range(checkboxes.count()):
+            cb = checkboxes.nth(i)
+            if cb.is_checked():
+                cb.uncheck()
+
+        # 対象月のチェックボックスを探す
+        found = False
+
+        # value属性で検索
+        target_cb = page.locator(f'input[type="checkbox"][value="{target_ym}"]')
+        if target_cb.count() > 0:
+            target_cb.first.check()
+            found = True
+            log.info(f"  月を選択しました（value属性）: {target_ym}")
+        else:
+            # ラベルテキストで検索
+            all_labels = page.locator("label")
+            for i in range(all_labels.count()):
+                label = all_labels.nth(i)
+                label_text = (label.text_content() or "").strip()
+                if target_label in label_text or target_label_alt in label_text or target_ym in label_text:
+                    # ラベルに対応するチェックボックスをクリック
+                    label.click()
+                    found = True
+                    log.info(f"  月を選択しました（ラベル）: {label_text}")
+                    break
+
+        if not found:
+            # テーブル行のテキストから検索
+            rows = page.locator("tr")
+            for i in range(rows.count()):
+                row = rows.nth(i)
+                row_text = (row.text_content() or "").strip()
+                if target_label in row_text or target_label_alt in row_text:
+                    cb = row.locator('input[type="checkbox"]')
+                    if cb.count() > 0:
+                        cb.first.check()
+                        found = True
+                        log.info(f"  月を選択しました（テーブル行）: {row_text[:30]}")
+                        break
+
+        if not found:
+            log.error(f"  対象月 {target_label} のチェックボックスが見つかりませんでした")
+            return False
+
+        time.sleep(1)
+        return True
+
+    except Exception as e:
+        log.error(f"対象月の選択に失敗しました: {e}")
+        return False
+
+
+def _au_download_pdf_from_page(
+    ctx: BillingContext, page, save_dir: Path, year: str, month: str, phone: str,
+    pdf_types: set[str] | None = None,
+) -> bool:
+    """au WEB de 請求書からPDFをダウンロードする。"""
+    if pdf_types is None:
+        pdf_types = {"請求書"}
+
+    log.info(f"ダウンロード対象: {', '.join(sorted(pdf_types))}")
+
+    amount = ""
+    try:
+        amount_el = page.locator("text=/[\\d,]+円/").first
+        if amount_el.is_visible(timeout=3000):
+            raw_amount = amount_el.text_content()
+            if raw_amount:
+                amount = sanitize_amount(raw_amount)
+                log.info(f"  請求金額を取得: {amount}")
+    except Exception:
+        log.info("  請求金額の取得をスキップしました")
+
+    any_success = False
+
+    for pdf_type in sorted(pdf_types):
+        log.info(f"{pdf_type}のダウンロードを試みます...")
+
+        # 対応するタブがあれば切り替え
+        try:
+            tab = page.get_by_text(pdf_type, exact=False)
+            if tab.first.is_visible(timeout=2000):
+                tab.first.click()
+                page.wait_for_load_state("networkidle")
+                time.sleep(1)
+        except Exception:
+            pass
+
+        # ダウンロードボタンを探す
+        download_btn = (
+            page.get_by_text(re.compile(r"ダウンロード"), exact=False)
+            .or_(page.get_by_text(re.compile(r"保存"), exact=False))
+            .or_(page.get_by_text(re.compile(r"印刷"), exact=False))
+            .or_(page.locator('a[href*="pdf"]'))
+            .or_(page.locator('a[href*="download"]'))
+            .or_(page.locator('a[href*="print"]'))
+        )
+
+        try:
+            if download_btn.first.is_visible(timeout=5000):
+                # 確認ダイアログが出る場合があるので、dialogイベントをハンドル
+                page.on("dialog", lambda dialog: dialog.accept())
+
+                for attempt in range(3):
+                    try:
+                        with page.expect_download(timeout=60000) as download_info:
+                            download_btn.first.click()
+                        download = download_info.value
+                        filename = build_filename(ctx, year, month, phone, amount)
+                        if pdf_type != "請求書":
+                            stem = Path(filename).stem
+                            filename = f"{stem}_{pdf_type}.pdf"
+                        dest = save_dir / filename
+
+                        download.save_as(str(dest))
+
+                        if ctx.drive_ctx is not None:
+                            folder_id = ctx.drive_ctx.get_folder_id(year, month)
+                            ok = ctx.drive_ctx.upload(dest, folder_id)
+                            try:
+                                dest.unlink()
+                            except Exception:
+                                pass
+                            if ok:
+                                any_success = True
+                            break
+                        else:
+                            log.info(f"  [{pdf_type}] 保存完了: {dest}")
+                            any_success = True
+                            break
+                    except Exception as e:
+                        if attempt < 2:
+                            log.warning(f"  [{pdf_type}] ダウンロード失敗 (試行{attempt+1}/3): {e}")
+                            time.sleep(2 * (2 ** attempt))
+                        else:
+                            log.warning(f"  [{pdf_type}] ダウンロード失敗 (全3回試行): {e}")
+            else:
+                log.info(f"  {pdf_type}のダウンロードボタンが見つかりませんでした")
+        except Exception as e:
+            log.warning(f"  {pdf_type}のダウンロードに失敗: {e}")
+
+    if not any_success:
+        log.error("指定した種別のPDFがダウンロードできませんでした")
+    return any_success

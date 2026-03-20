@@ -7,6 +7,8 @@
  *     認証情報       ... ダウンロード対象の電話番号（サイドバーで管理）
  *     SoftBankリンク ... ダウンロード済みPDFへのリンク一覧
  *     Ymobileリンク  ... 同上
+ *     auリンク       ... 同上
+ *     UQmobileリンク ... 同上
  *   回線管理スプレッドシート（別スプレッドシート）:
  *     月別シート     ... 電話番号・解約済・運用端末等の管理データ
  *
@@ -27,10 +29,13 @@ const SETTINGS_SHEET_NAME = "設定";
 const AUTH_SHEET_NAME = "認証情報";
 const SOFTBANK_LINK_SHEET_NAME = "SoftBankリンク";
 const YMOBILE_LINK_SHEET_NAME = "Ymobileリンク";
+const AU_LINK_SHEET_NAME = "auリンク";
+const UQMOBILE_LINK_SHEET_NAME = "UQmobileリンク";
 
 const HISTORY_SHEET_NAME = "ダウンロード履歴";
 const MONTH_COL_START = 3; // リンクシートの月列開始位置（C列）
 
+// SoftBank / Ymobile 用
 const PDF_TYPE_OPTIONS = [
   "電話番号別",
   "一括",
@@ -39,6 +44,17 @@ const PDF_TYPE_OPTIONS = [
   "電話番号別,機種別",
   "一括,機種別",
   "電話番号別,一括,機種別",
+];
+
+// au / UQmobile 用
+const AU_PDF_TYPE_OPTIONS = [
+  "請求書",
+  "領収書",
+  "支払証明書",
+  "請求書,領収書",
+  "請求書,支払証明書",
+  "領収書,支払証明書",
+  "請求書,領収書,支払証明書",
 ];
 
 
@@ -53,6 +69,8 @@ function setupSheet() {
   setupAuthSheet_(ss);
   setupLinkSheet_(ss, SOFTBANK_LINK_SHEET_NAME, "SoftBank");
   setupLinkSheet_(ss, YMOBILE_LINK_SHEET_NAME, "Ymobile");
+  setupLinkSheet_(ss, AU_LINK_SHEET_NAME, "au");
+  setupLinkSheet_(ss, UQMOBILE_LINK_SHEET_NAME, "UQmobile");
   setupHistorySheet_(ss);
 
   // 旧シートの削除
@@ -94,6 +112,10 @@ function setupSettingsSheet_(ss) {
     "Google DriveのフォルダURL、またはローカル絶対パス。");
   _upsertSettingRow_(sheet, "パスワード", "",
     "SoftBank / Y!mobile 共通のログインパスワード。");
+  _upsertSettingRow_(sheet, "au/UQパスワード", "",
+    "au / UQ mobile 共通のau IDパスワード。");
+  _upsertSettingRow_(sheet, "au暗証番号", "",
+    "au / UQ mobile の4桁暗証番号（請求書閲覧時に必要な場合あり）。");
   _upsertSettingRow_(sheet, "対象月", "自動（前月）",
     "ダウンロードする月。「自動（前月）」= 実行時の前月。");
   _setTargetMonthValidation_(sheet);
@@ -145,7 +167,7 @@ function setupAuthSheet_(ss) {
   const lastRow = Math.max(sheet.getLastRow(), 50);
   const carrierRange = sheet.getRange(2, 2, lastRow - 1, 1);
   carrierRange.setDataValidation(SpreadsheetApp.newDataValidation()
-    .requireValueInList(["SoftBank", "Ymobile"], true)
+    .requireValueInList(["SoftBank", "Ymobile", "au", "UQmobile"], true)
     .setAllowInvalid(false).build());
 
   // PDFの種類列にドロップダウンを設定
@@ -222,6 +244,8 @@ function _getPhoneManagerHtml_() {
   .tab-btn.active { color: #fff; }
   .tab-btn[data-carrier="SoftBank"].active { background: #4285F4; }
   .tab-btn[data-carrier="Ymobile"].active { background: #FF6D00; }
+  .tab-btn[data-carrier="au"].active { background: #E94E1B; }
+  .tab-btn[data-carrier="UQmobile"].active { background: #0068B7; }
   .phone-list { max-height: 55vh; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 4px; }
   .phone-item {
     display: flex; align-items: center; gap: 8px; padding: 6px 8px;
@@ -252,6 +276,8 @@ function _getPhoneManagerHtml_() {
   <div class="tab-bar">
     <button class="tab-btn active" data-carrier="SoftBank" onclick="switchTab('SoftBank')">SoftBank</button>
     <button class="tab-btn" data-carrier="Ymobile" onclick="switchTab('Ymobile')">Y!mobile</button>
+    <button class="tab-btn" data-carrier="au" onclick="switchTab('au')">au</button>
+    <button class="tab-btn" data-carrier="UQmobile" onclick="switchTab('UQmobile')">UQ mobile</button>
   </div>
   <div id="status" class="status"></div>
   <div id="phoneList" class="phone-list"><div class="empty-msg">読み込み中...</div></div>
@@ -264,6 +290,10 @@ function _getPhoneManagerHtml_() {
 
 <script>
   const PDF_TYPES = ${JSON.stringify(PDF_TYPE_OPTIONS)};
+  const AU_PDF_TYPES = ${JSON.stringify(AU_PDF_TYPE_OPTIONS)};
+  function getPdfTypesForCarrier(c) {
+    return (c === "au" || c === "UQmobile") ? AU_PDF_TYPES : PDF_TYPES;
+  }
   let currentCarrier = "SoftBank";
   let phoneData = {};
   let selections = {};
@@ -281,12 +311,13 @@ function _getPhoneManagerHtml_() {
         phoneData = r.phones;
         var savedSelections = r.selections;
         // 契約中番号を全選択した上で、既存の選択があればPDFの種類を復元
-        selections = { SoftBank: {}, Ymobile: {} };
-        ["SoftBank", "Ymobile"].forEach(function(c) {
+        selections = { SoftBank: {}, Ymobile: {}, au: {}, UQmobile: {} };
+        ["SoftBank", "Ymobile", "au", "UQmobile"].forEach(function(c) {
           var active = (phoneData[c] || []).filter(function(p) { return !p.cancelled; });
           var saved = savedSelections[c] || {};
           active.forEach(function(p) {
-            selections[c][p.phone] = { pdfType: (saved[p.phone] && saved[p.phone].pdfType) || "電話番号別" };
+            var defaultPdfType = (c === "au" || c === "UQmobile") ? "請求書" : "電話番号別";
+            selections[c][p.phone] = { pdfType: (saved[p.phone] && saved[p.phone].pdfType) || defaultPdfType };
           });
         });
         clearStatus();
@@ -324,15 +355,17 @@ function _getPhoneManagerHtml_() {
     var html = "";
     active.forEach(function(p) {
       var checked = sel[p.phone] ? "checked" : "";
-      var pdfType = (sel[p.phone] && sel[p.phone].pdfType) || "電話番号別";
+      var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書" : "電話番号別";
+      var pdfType = (sel[p.phone] && sel[p.phone].pdfType) || defaultPdfType;
       var label = p.device ? p.phone + " (" + p.device + ")" : p.phone;
+      var pdfTypes = getPdfTypesForCarrier(currentCarrier);
 
       html += '<div class="phone-item">'
         + '<input type="checkbox" data-phone="' + p.phone + '" ' + checked
         + ' onchange="onCheck(this)">'
         + '<span class="phone-number">' + label + '</span>'
         + '<select data-phone="' + p.phone + '" onchange="onPdfType(this)">';
-      PDF_TYPES.forEach(function(t) {
+      pdfTypes.forEach(function(t) {
         html += '<option' + (t === pdfType ? ' selected' : '') + '>' + t + '</option>';
       });
       html += '</select></div>';
@@ -345,7 +378,8 @@ function _getPhoneManagerHtml_() {
     if (!selections[currentCarrier]) selections[currentCarrier] = {};
     if (el.checked) {
       var selEl = el.parentElement.querySelector("select");
-      selections[currentCarrier][el.dataset.phone] = { pdfType: selEl ? selEl.value : "電話番号別" };
+      var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書" : "電話番号別";
+      selections[currentCarrier][el.dataset.phone] = { pdfType: selEl ? selEl.value : defaultPdfType };
     } else {
       delete selections[currentCarrier][el.dataset.phone];
     }
@@ -433,7 +467,8 @@ function savePhoneSelections(selections) {
     // 解約済番号セット・運用端末・名義マップ
     const cancelledSet = new Set();
     const deviceMap = {}, nameMap = {};
-    for (const carrier of ["SoftBank", "Ymobile"]) {
+    const ALL_CARRIERS = ["SoftBank", "Ymobile", "au", "UQmobile"];
+    for (const carrier of ALL_CARRIERS) {
       for (const p of (allPhones[carrier] || [])) {
         if (p.cancelled) cancelledSet.add(p.phone);
         if (p.device) deviceMap[p.phone] = p.device;
@@ -462,20 +497,21 @@ function savePhoneSelections(selections) {
     // 選択中の番号（解約済除外）
     const activeRows = [];
     const cancelledRows = [];
-    const linkData = { SoftBank: [], Ymobile: [] };
+    const linkData = { SoftBank: [], Ymobile: [], au: [], UQmobile: [] };
 
-    for (const carrier of ["SoftBank", "Ymobile"]) {
+    for (const carrier of ALL_CARRIERS) {
       const sel = selections[carrier] || {};
       for (const phone of Object.keys(sel)) {
         if (cancelledSet.has(phone)) continue;
-        const pdfType = sel[phone].pdfType || "電話番号別";
+        const defaultPdfType = (carrier === "au" || carrier === "UQmobile") ? "請求書" : "電話番号別";
+        const pdfType = sel[phone].pdfType || defaultPdfType;
         activeRows.push([phone, carrier, pdfType, deviceMap[phone] || "", "契約中"]);
         linkData[carrier].push({ phone, name: nameMap[phone] || "" });
       }
     }
 
     // 解約済回線を末尾に追加
-    for (const carrier of ["SoftBank", "Ymobile"]) {
+    for (const carrier of ALL_CARRIERS) {
       for (const p of (allPhones[carrier] || [])) {
         if (p.cancelled) {
           cancelledRows.push([p.phone, carrier, "", p.device || "", "解約済"]);
@@ -502,6 +538,8 @@ function savePhoneSelections(selections) {
     // ── リンクシートの電話番号を同期（解約済もグレー表示） ──
     _syncLinkSheetPhones_(ss, SOFTBANK_LINK_SHEET_NAME, linkData.SoftBank, cancelledSet);
     _syncLinkSheetPhones_(ss, YMOBILE_LINK_SHEET_NAME, linkData.Ymobile, cancelledSet);
+    _syncLinkSheetPhones_(ss, AU_LINK_SHEET_NAME, linkData.au, cancelledSet);
+    _syncLinkSheetPhones_(ss, UQMOBILE_LINK_SHEET_NAME, linkData.UQmobile, cancelledSet);
 
     let msg = `保存しました（有効${activeRows.length}件）。`;
     if (cancelledRows.length > 0) msg += `\n解約済${cancelledRows.length}件をグレー表示で記録。`;
@@ -568,6 +606,8 @@ function _normalizeCarrierName_(text) {
   if (!s) return null;
   if (s === "softbank" || s.includes("ソフトバンク")) return "SoftBank";
   if (s === "ymobile" || s === "y!mobile" || s.includes("ワイモバイル")) return "Ymobile";
+  if (s === "au" || s.includes("エーユー") || s === "kddi") return "au";
+  if (s === "uqmobile" || s === "uq mobile" || s === "uq" || s.includes("ユーキュー")) return "UQmobile";
   return null;
 }
 
@@ -576,7 +616,7 @@ function _normalizeCarrierName_(text) {
  * セクション分け構造に対応（キャリアラベル行 → ヘッダー行 → データ行）。
  */
 function _getAllPhonesFromMonthSheets_() {
-  const result = { SoftBank: [], Ymobile: [] };
+  const result = { SoftBank: [], Ymobile: [], au: [], UQmobile: [] };
 
   let ss;
   const mgmtUrl = _getSettingValue_("回線管理スプレッドシート");
@@ -653,7 +693,7 @@ function _detectCarrierLabel_(row) {
 function _getCurrentSelections_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(AUTH_SHEET_NAME);
-  const result = { SoftBank: {}, Ymobile: {} };
+  const result = { SoftBank: {}, Ymobile: {}, au: {}, UQmobile: {} };
   if (!sheet || sheet.getLastRow() <= 1) return result;
 
   const data = sheet.getDataRange().getValues();
@@ -687,8 +727,12 @@ function _parseMonthSheetNum_(name) {
 
 function updateSoftBankLinks()      { _updatePdfLinks_(SOFTBANK_LINK_SHEET_NAME, "SoftBank"); }
 function updateYmobileLinks()       { _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile"); }
+function updateAuLinks()            { _updatePdfLinks_(AU_LINK_SHEET_NAME, "au"); }
+function updateUQmobileLinks()      { _updatePdfLinks_(UQMOBILE_LINK_SHEET_NAME, "UQmobile"); }
 function forceUpdateSoftBankLinks() { _updatePdfLinks_(SOFTBANK_LINK_SHEET_NAME, "SoftBank", false, true); }
 function forceUpdateYmobileLinks()  { _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile", false, true); }
+function forceUpdateAuLinks()       { _updatePdfLinks_(AU_LINK_SHEET_NAME, "au", false, true); }
+function forceUpdateUQmobileLinks() { _updatePdfLinks_(UQMOBILE_LINK_SHEET_NAME, "UQmobile", false, true); }
 
 function updateAllLinks()      { _runAllLinkUpdates_(false); }
 function forceUpdateAllLinks() { _runAllLinkUpdates_(true); }
@@ -696,8 +740,16 @@ function forceUpdateAllLinks() { _runAllLinkUpdates_(true); }
 function _runAllLinkUpdates_(force) {
   const sb = _updatePdfLinks_(SOFTBANK_LINK_SHEET_NAME, "SoftBank", true, force);
   const ym = _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile", true, force);
-  _showLinkUpdateResult_((sb.pdfs || 0) + (ym.pdfs || 0), (sb.added || 0) + (ym.added || 0),
-    (sb.overwritten || 0) + (ym.overwritten || 0), (sb.newPhones || 0) + (ym.newPhones || 0), force);
+  const au = _updatePdfLinks_(AU_LINK_SHEET_NAME, "au", true, force);
+  const uq = _updatePdfLinks_(UQMOBILE_LINK_SHEET_NAME, "UQmobile", true, force);
+  const totals = [sb, ym, au, uq];
+  _showLinkUpdateResult_(
+    totals.reduce((s, r) => s + (r.pdfs || 0), 0),
+    totals.reduce((s, r) => s + (r.added || 0), 0),
+    totals.reduce((s, r) => s + (r.overwritten || 0), 0),
+    totals.reduce((s, r) => s + (r.newPhones || 0), 0),
+    force
+  );
 }
 
 /**
@@ -810,12 +862,16 @@ function _updatePdfLinks_(sheetName, carrier, silent = false, force = false) {
 
 function scanAndUpdateSoftBankAmounts() { _scanAndUpdatePdfAmounts_(SOFTBANK_LINK_SHEET_NAME, "SoftBank"); }
 function scanAndUpdateYmobileAmounts() { _scanAndUpdatePdfAmounts_(YMOBILE_LINK_SHEET_NAME, "Ymobile"); }
+function scanAndUpdateAuAmounts() { _scanAndUpdatePdfAmounts_(AU_LINK_SHEET_NAME, "au"); }
+function scanAndUpdateUQmobileAmounts() { _scanAndUpdatePdfAmounts_(UQMOBILE_LINK_SHEET_NAME, "UQmobile"); }
 function scanAndUpdateAllAmounts() {
   const sb = _scanAndUpdatePdfAmounts_(SOFTBANK_LINK_SHEET_NAME, "SoftBank", true);
   const ym = _scanAndUpdatePdfAmounts_(YMOBILE_LINK_SHEET_NAME, "Ymobile", true);
-  const total = (sb.total || 0) + (ym.total || 0);
-  const updated = (sb.updated || 0) + (ym.updated || 0);
-  const failed = (sb.failed || 0) + (ym.failed || 0);
+  const au = _scanAndUpdatePdfAmounts_(AU_LINK_SHEET_NAME, "au", true);
+  const uq = _scanAndUpdatePdfAmounts_(UQMOBILE_LINK_SHEET_NAME, "UQmobile", true);
+  const total = (sb.total || 0) + (ym.total || 0) + (au.total || 0) + (uq.total || 0);
+  const updated = (sb.updated || 0) + (ym.updated || 0) + (au.updated || 0) + (uq.updated || 0);
+  const failed = (sb.failed || 0) + (ym.failed || 0) + (au.failed || 0) + (uq.failed || 0);
   if (total === 0) {
     SpreadsheetApp.getUi().alert("情報", "金額が未取得のPDFはありませんでした。", SpreadsheetApp.getUi().ButtonSet.OK);
   } else {
@@ -1010,16 +1066,22 @@ function onOpen() {
     .addSeparator()
     .addItem("SoftBankのみ", "updateSoftBankLinks")
     .addItem("Ymobileのみ", "updateYmobileLinks")
+    .addItem("auのみ", "updateAuLinks")
+    .addItem("UQmobileのみ", "updateUQmobileLinks")
     .addSeparator()
     .addItem("全キャリア一括（強制上書き）", "forceUpdateAllLinks")
     .addItem("SoftBankのみ（強制上書き）", "forceUpdateSoftBankLinks")
-    .addItem("Ymobileのみ（強制上書き）", "forceUpdateYmobileLinks");
+    .addItem("Ymobileのみ（強制上書き）", "forceUpdateYmobileLinks")
+    .addItem("auのみ（強制上書き）", "forceUpdateAuLinks")
+    .addItem("UQmobileのみ（強制上書き）", "forceUpdateUQmobileLinks");
 
   const amountMenu = SpreadsheetApp.getUi().createMenu("金額取得・ファイル名更新")
     .addItem("全キャリア一括更新", "scanAndUpdateAllAmounts")
     .addSeparator()
     .addItem("SoftBankのみ", "scanAndUpdateSoftBankAmounts")
-    .addItem("Ymobileのみ", "scanAndUpdateYmobileAmounts");
+    .addItem("Ymobileのみ", "scanAndUpdateYmobileAmounts")
+    .addItem("auのみ", "scanAndUpdateAuAmounts")
+    .addItem("UQmobileのみ", "scanAndUpdateUQmobileAmounts");
 
   SpreadsheetApp.getUi().createMenu("携帯領収書管理 ツール")
     .addItem("初期セットアップ", "setupSheet")

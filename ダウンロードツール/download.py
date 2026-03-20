@@ -36,7 +36,35 @@ YMOBILE_CONFIG = CarrierConfig(
     temp_dir_prefix="ymobile_pdf_",
 )
 
-ALL_CARRIERS = [SOFTBANK_CONFIG, YMOBILE_CONFIG]
+AU_CONFIG = CarrierConfig(
+    carrier_name="au",
+    display_name="My au",
+    auth_domain="connect.auone.jp",
+    login_url="https://my.au.com/",
+    carrier_family="au",
+    au_billing_top_url="https://my.au.com/",
+    au_pin_setting_name="au暗証番号",
+    password_setting_name="au/UQパスワード",
+    code_file_prefix="au",
+    session_file_prefix="au",
+    temp_dir_prefix="au_pdf_",
+)
+
+UQ_CONFIG = CarrierConfig(
+    carrier_name="UQmobile",
+    display_name="My UQ mobile",
+    auth_domain="connect.auone.jp",
+    login_url="https://my.au.com/",
+    carrier_family="au",
+    au_billing_top_url="https://my.au.com/",
+    au_pin_setting_name="au暗証番号",
+    password_setting_name="au/UQパスワード",
+    code_file_prefix="uqmobile",
+    session_file_prefix="uqmobile",
+    temp_dir_prefix="uqmobile_pdf_",
+)
+
+ALL_CARRIERS = [SOFTBANK_CONFIG, YMOBILE_CONFIG, AU_CONFIG, UQ_CONFIG]
 
 
 def main():
