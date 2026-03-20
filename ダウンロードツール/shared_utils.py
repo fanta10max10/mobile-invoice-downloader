@@ -2231,7 +2231,7 @@ def _au_download_pdf_from_page(
         agdt = "2" if pdf_type == "支払証明書" else "1"
         dl_url = f"https://my.au.com/aus/seikyu/download?agdt={agdt}&DlCals={dl_cal}"
         try:
-            page.goto(dl_url, wait_until="networkidle")
+            page.goto(dl_url, wait_until="domcontentloaded", timeout=60000)
             time.sleep(3)
             log.info(f"  ダウンロードページ: {page.url}")
         except Exception as e:
