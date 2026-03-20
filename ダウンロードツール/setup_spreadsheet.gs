@@ -1228,13 +1228,8 @@ function onOpen() {
     .addItem("auのみ（強制上書き）", "forceUpdateAuLinks")
     .addItem("UQmobileのみ（強制上書き）", "forceUpdateUQmobileLinks");
 
-  const amountMenu = SpreadsheetApp.getUi().createMenu("金額取得・ファイル名更新")
-    .addItem("全キャリア一括更新", "scanAndUpdateAllAmounts")
-    .addSeparator()
-    .addItem("SoftBankのみ", "scanAndUpdateSoftBankAmounts")
-    .addItem("Ymobileのみ", "scanAndUpdateYmobileAmounts")
-    .addItem("auのみ", "scanAndUpdateAuAmounts")
-    .addItem("UQmobileのみ", "scanAndUpdateUQmobileAmounts");
+  // 金額取得・ファイル名更新はPythonのダウンロード時に自動取得するためGASメニューから削除
+  // au/UQのまとめ請求PDFはOCRでの個別金額取得が不正確なため、Pythonのページ取得に一本化
 
   SpreadsheetApp.getUi().createMenu("携帯領収書管理 ツール")
     .addItem("初期セットアップ", "setupSheet")
@@ -1242,6 +1237,5 @@ function onOpen() {
     .addItem("ダウンロード対象の電話番号を管理", "openPhoneManagerSidebar")
     .addSeparator()
     .addSubMenu(linkMenu)
-    .addSubMenu(amountMenu)
     .addToUi();
 }

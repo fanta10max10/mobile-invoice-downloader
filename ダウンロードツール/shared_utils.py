@@ -2346,17 +2346,43 @@ def _au_download_pdf_from_page(
             log.error(f"  対象月 {target_ym} の選択肢が見つかりません (URL: {page.url})")
             continue
 
-        # 金額取得を試みる
+        # 金額取得を試みる（回線選択後のページから対象電話番号の金額を取得）
         amount = ""
         try:
-            amount_el = page.locator("text=/[\\d,]+円/").first
-            if amount_el.is_visible(timeout=2000):
-                raw_amount = amount_el.text_content()
-                if raw_amount:
-                    amount = sanitize_amount(raw_amount)
-                    log.info(f"  請求金額: {amount}")
-        except Exception:
-            pass
+            phone_formatted = f"{phone[:3]}-{phone[3:7]}-{phone[7:]}" if len(phone) >= 10 else phone
+            # ページテキストから電話番号の近くにある金額を探す
+            page_text = page.inner_text("body")
+            # 電話番号を含む行の近くにある ( 金額 ) パターン
+            idx = page_text.find(phone_formatted)
+            if idx == -1:
+                idx = page_text.find(phone)
+            if idx >= 0:
+                # 電話番号の前後200文字から金額を探す
+                start = max(0, idx - 50)
+                end = min(len(page_text), idx + 200)
+                nearby = page_text[start:end]
+                # 括弧付き金額 ( 1,851 )
+                m_bracket = re.search(r'\(\s*([\d,]+)\s*\)', nearby)
+                if m_bracket:
+                    amount = sanitize_amount(m_bracket.group(1))
+                else:
+                    # 「円」付き金額
+                    m_yen = re.search(r'([\d,]+)\s*円', nearby)
+                    if m_yen:
+                        amount = sanitize_amount(m_yen.group(1))
+            if not amount:
+                # フォールバック: ページ上の金額テキスト
+                amount_els = page.locator("text=/[\\d,]+円/").all()
+                for el in amount_els:
+                    raw = el.text_content() or ""
+                    a = sanitize_amount(raw)
+                    if a:
+                        amount = a
+                        break
+            if amount:
+                log.info(f"  請求金額: {amount}")
+        except Exception as e:
+            log.info(f"  請求金額の取得をスキップ: {e}")
 
         # 「選択した期間の請求書のダウンロード」ボタンをクリック
         download_btn = page.get_by_text(re.compile(r"選択した期間の.+ダウンロード"), exact=False)
