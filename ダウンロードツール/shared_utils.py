@@ -1762,19 +1762,24 @@ def _is_on_au_auth_page(ctx: BillingContext, page) -> bool:
 def _do_au_login_and_navigate(ctx: BillingContext, page, phone_number: str, password: str) -> bool:
     """au ID でログイン → WEB de 請求書ページまで遷移する。"""
 
-    # Step 1: WEB de 請求書ページにアクセス（ログインページにリダイレクトされる）
-    billing_url = ctx.config.au_billing_top_url or ctx.config.login_url
-    log.info(f"WEB de 請求書ページにアクセス中: {billing_url}")
+    # Step 1: au IDログインページに直接アクセス（targeturl付きでセッション生成）
+    import urllib.parse
+    target = ctx.config.au_billing_top_url or "https://id.auone.jp/index.html"
+    login_url = (
+        "https://connect.auone.jp/net/vwc/cca_lg_eu_nets/login"
+        f"?targeturl={urllib.parse.quote(target, safe='')}"
+    )
+    log.info(f"au IDログインページにアクセス中...")
     retry_with_backoff(
-        lambda: page.goto(billing_url, wait_until="networkidle"),
+        lambda: page.goto(login_url, wait_until="networkidle"),
         max_retries=3, retryable_exceptions=(PlaywrightTimeout, ConnectionError), logger=log,
     )
     page.wait_for_load_state("networkidle")
     time.sleep(2)
-    log.info(f"  リダイレクト先URL: {page.url}")
+    log.info(f"  現在のURL: {page.url}")
 
     if not _is_on_au_auth_page(ctx, page):
-        log.info("  認証なしでページに到達しました")
+        log.info("  認証済みのためログインをスキップ → 請求書ページへ遷移")
         return True
 
     # Step 2: au ID ログイン（2ステップ: ID入力 → パスワード入力）
@@ -1795,20 +1800,29 @@ def _do_au_login_and_navigate(ctx: BillingContext, page, phone_number: str, pass
         id_input.first.fill(login_id)
         log.info("  au IDを入力しました")
 
-        # 「次へ」ボタンをクリック（au IDは2ステップログイン）
-        next_btn = (
-            page.locator('#btn_idInput')
-            .or_(page.get_by_text("次へ", exact=False))
-            .or_(page.locator('button[type="submit"]'))
-        )
+        # 「次へ」ボタンをクリック（2ステップログインの場合のみ）
+        # パスワード欄がすでに表示されていればシングルステップなのでスキップ
+        pw_visible = page.locator('input[type="password"]').first.is_visible(timeout=1000) if True else False
         try:
-            if next_btn.first.is_visible(timeout=3000):
-                next_btn.first.click()
-                page.wait_for_load_state("networkidle")
-                time.sleep(2)
-                log.info("  「次へ」をクリックしました")
+            pw_visible = page.locator('input[type="password"]').first.is_visible(timeout=1000)
         except Exception:
-            pass  # シングルステップの場合はスキップ
+            pw_visible = False
+
+        if not pw_visible:
+            next_btn = (
+                page.locator('#btn_idInput')
+                .or_(page.get_by_text("次へ", exact=True))
+            )
+            try:
+                if next_btn.first.is_visible(timeout=3000):
+                    next_btn.first.click()
+                    page.wait_for_load_state("networkidle")
+                    time.sleep(2)
+                    log.info("  「次へ」をクリックしました")
+            except Exception:
+                pass
+        else:
+            log.info("  シングルステップログイン（パスワード欄が表示済み）")
 
         # パスワード入力
         pw_input = (
@@ -1823,9 +1837,9 @@ def _do_au_login_and_navigate(ctx: BillingContext, page, phone_number: str, pass
         # ログインボタンクリック
         login_btn = (
             page.locator('#btn_pwdLogin')
-            .or_(page.get_by_text("ログイン", exact=False))
-            .or_(page.locator('input[type="submit"]'))
+            .or_(page.get_by_role("button", name=re.compile(r"^ログイン$")))
             .or_(page.locator('button[type="submit"]'))
+            .or_(page.locator('input[type="submit"]'))
         )
         _click_any_button(page, login_btn, "ログインボタン", text_hint="ログイン")
 
