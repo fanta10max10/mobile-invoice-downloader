@@ -1800,19 +1800,6 @@ def run_main(ctx: BillingContext) -> None:
             filename = build_filename(ctx, year, month, phone)
             downloaded_filenames[phone] = [filename]
 
-    # 結果サマリー
-    status_labels = {"success": "✅ 成功", "skipped": "⏭️ ダウンロード済み", "failed": "❌ 失敗"}
-    log.info("=" * 50)
-    log.info("処理結果サマリー:")
-    for phone, result in results:
-        log.info(f"  {phone}: {status_labels.get(result, result)}")
-
-    n_success = sum(1 for _, r in results if r == "success")
-    n_skipped = sum(1 for _, r in results if r == "skipped")
-    n_failed = sum(1 for _, r in results if r == "failed")
-    log.info(f"  合計: {n_success} 件成功 / {n_skipped} 件スキップ / {n_failed} 件失敗")
-    log.info("=" * 50)
-
     # ダウンロード履歴をスプレッドシートに記録（スキップ分は記録しない）
     history_results = [(p, r == "success") for p, r in results if r != "skipped"]
     if history_results:
@@ -1822,17 +1809,11 @@ def run_main(ctx: BillingContext) -> None:
     if ctx.temp_save_dir is not None and ctx.temp_save_dir.exists():
         try:
             shutil.rmtree(str(ctx.temp_save_dir))
-            log.info(f"一時ディレクトリを削除しました: {ctx.temp_save_dir}")
         except Exception as e:
             log.warning(f"一時ディレクトリの削除に失敗: {e}")
 
-    failed = [p for p, r in results if r == "failed"]
-    if failed:
-        log.warning(f"{len(failed)} 件の失敗がありました")
-    else:
-        log.info("全回線の処理が正常に完了しました")
-
-    return len(failed)
+    # キャリア名付きの結果を返す（download.pyで集約表示）
+    return [(ctx.config.carrier_name, phone, result) for phone, result in results]
 
 
 # ══════════════════════════════════════════════════════════
