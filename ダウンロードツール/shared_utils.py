@@ -1904,7 +1904,7 @@ def _do_au_login_and_navigate(ctx: BillingContext, page, phone_number: str, pass
             log.error(f"  暗証番号の入力に失敗: {e}")
             return False
 
-    # Step 5: WEB de 請求書ページへの到達確認
+    # Step 5: 請求書ダウンロードページへ遷移
     final_url = page.url
     log.info(f"  最終URL: {final_url}")
 
@@ -1912,17 +1912,26 @@ def _do_au_login_and_navigate(ctx: BillingContext, page, phone_number: str, pass
         log.error("  au認証を完了できませんでした")
         return False
 
-    # targeturlで正しいページに遷移済みのはず
-    # 遷移していない場合のみ請求ページへ移動
-    if ctx.config.au_billing_top_url and ctx.config.au_billing_top_url not in final_url:
-        log.info(f"  請求ページへ遷移: {ctx.config.au_billing_top_url}")
+    # 「請求書/領収書/支払証明書の保存・印刷」リンクをクリック
+    billing_link_texts = [
+        "請求書/領収書/支払証明書の保存・印刷",
+        "請求書/領収書/支払証明書",
+        "保存・印刷",
+        "請求書一括印刷",
+    ]
+    for text in billing_link_texts:
         try:
-            page.goto(ctx.config.au_billing_top_url, wait_until="networkidle", timeout=15000)
-            time.sleep(2)
-            log.info(f"  遷移後のURL: {page.url}")
-        except Exception as e:
-            log.warning(f"  請求ページへの遷移に失敗: {e}")
+            link = page.get_by_text(text, exact=False).first
+            if link.is_visible(timeout=3000):
+                link.click()
+                page.wait_for_load_state("networkidle")
+                time.sleep(2)
+                log.info(f"  「{text}」をクリック → {page.url}")
+                return True
+        except Exception:
+            continue
 
+    # リンクが見つからない場合、現在のページで続行
     log.info(f"  請求ページに到達: {page.url}")
     return True
 
