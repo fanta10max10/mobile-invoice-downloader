@@ -491,8 +491,10 @@ function savePhoneSelections(selections) {
     }
 
     // 既存データを全クリア（ヘッダー行以外）
-    const lastRow = Math.max(authSheet.getLastRow(), 1);
+    // getMaxRows()で書式だけの行も含めて確実にクリアする
+    const lastRow = Math.max(authSheet.getLastRow(), authSheet.getMaxRows());
     const lastCol = Math.max(authSheet.getLastColumn(), 6);
+    Logger.log(`[save] クリア: lastRow=${lastRow}, lastCol=${lastCol}`);
     if (lastRow > 1) {
       const rows = lastRow - 1;
       authSheet.getRange(2, 1, rows, lastCol).clearContent();
@@ -564,10 +566,11 @@ function savePhoneSelections(selections) {
     _syncLinkSheetPhones_(ss, AU_LINK_SHEET_NAME, linkData.au, cancelledSet);
     _syncLinkSheetPhones_(ss, UQMOBILE_LINK_SHEET_NAME, linkData.UQmobile, cancelledSet);
 
+    Logger.log(`[save] 書き込み: active=${activeRows.length}, cancelledSel=${cancelledSelectedRows.length}, cancelledUnsel=${cancelledUnselectedRows.length}, total=${allRows.length}`);
     let msg = `保存しました（契約中${activeRows.length}件`;
     if (cancelledSelectedRows.length > 0) msg += `、解約済（選択）${cancelledSelectedRows.length}件`;
     if (cancelledUnselectedRows.length > 0) msg += `、解約済（未選択）${cancelledUnselectedRows.length}件`;
-    msg += `）。`;
+    msg += `、合計${allRows.length}行）。`;
     return msg;
   } catch (e) {
     Logger.log(`[savePhoneSelections] エラー: ${e.message}\n${e.stack}`);
