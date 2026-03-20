@@ -207,7 +207,7 @@ DRY_RUN=true python3 download.py
 - **バックグラウンド実行時**: ファイル経由でコードを渡す（キャリアに応じてファイル名が異なる）
   - SoftBank: `echo '854' > /tmp/softbank_security_code.txt`
   - Y!mobile: `echo '854' > /tmp/ymobile_security_code.txt`
-- 入力待機時間は `SECURITY_CODE_TIMEOUT`（デフォルト300秒）で変更可能
+- 入力待機時間は `SECURITY_CODE_TIMEOUT`（デフォルト60秒）で変更可能
 
 ### セッションの再利用
 
@@ -239,7 +239,7 @@ del %TEMP%\softbank_session_*.json %TEMP%\ymobile_session_*.json
 | `BASE_SAVE_PATH` | （なし） | PDF保存先（設定シートで管理するため通常不要） |
 | `TARGET_MONTH` | 前月自動 | ダウンロード対象月（YYYYMM形式。設定シートより優先） |
 | `HEADLESS` | `true` | ブラウザ非表示モード。`false` でブラウザを表示 |
-| `SECURITY_CODE_TIMEOUT` | `300` | SMSセキュリティ番号の入力待機時間（秒） |
+| `SECURITY_CODE_TIMEOUT` | `60` | SMSセキュリティ番号の入力待機時間（秒） |
 | `DRY_RUN` | `false` | `true` で接続テスト付きの検証モード（Drive・ページアクセスを確認、ダウンロードは行わない） |
 | `RETRY_PHONES` | （なし） | 特定番号のみ再実行（カンマ区切り。例: `09012345678,08012345678`） |
 | `DRIVE_FALLBACK_PATH` | プロジェクトルート | Drive容量超過時のローカル保存先パス |
