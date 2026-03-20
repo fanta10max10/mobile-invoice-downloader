@@ -136,29 +136,33 @@ def update_amounts():
             ).execute().get("files", [])
             for cf in carrier_folders:
                 pdfs = service.files().list(
-                    q=f"'{cf['id']}' in parents and mimeType='application/pdf' and name contains '_利用料金明細' and trashed=false",
+                    q=f"'{cf['id']}' in parents and mimeType='application/pdf' and trashed=false",
                     fields="files(id,name)"
                 ).execute().get("files", [])
-                # 請求書本体のみ（支払証明書・領収書等は除外）
+                # 請求書本体のみ（支払証明書・領収書・一括・機種別は除外）
+                exclude_suffixes = ("_支払証明書.pdf", "_領収書.pdf", "_一括.pdf", "_機種別.pdf")
                 for pdf in pdfs:
                     name = pdf["name"]
-                    if name.endswith("_利用料金明細.pdf"):
+                    if any(name.endswith(s) for s in exclude_suffixes):
+                        continue
+                    if name.endswith(".pdf"):
                         targets.append(pdf)
 
-    log.info(f"金額未取得のPDF: {len(targets)}件")
+    log.info(f"対象PDF: {len(targets)}件")
     if not targets:
         log.info("金額未取得のPDFはありません。")
         return
 
     updated = 0
+    skipped = 0
     failed = 0
     for f in targets:
         name = f["name"]
-        m = re.match(r"(\d{6})_(\w+)_(\d+)_利用料金明細(_.+)?\.pdf", name)
+        # ファイル名パース: YYYYMM_carrier_phone_*.pdf
+        m = re.match(r"(\d{6})_(\w+)_(\d+)_.+\.pdf", name)
         if not m:
             continue
         ym, carrier, phone = m.group(1), m.group(2), m.group(3)
-        suffix = m.group(4) or ""  # "_支払証明書" など
         is_au = carrier in ("au", "UQmobile")
 
         content = service.files().get_media(fileId=f["id"]).execute()
@@ -168,7 +172,10 @@ def update_amounts():
         tmp.unlink()
 
         if amount:
-            new_name = f"{ym}_{carrier}_{phone}_{amount}{suffix}.pdf"
+            new_name = f"{ym}_{carrier}_{phone}_{amount}.pdf"
+            if new_name == name:
+                skipped += 1
+                continue
             service.files().update(fileId=f["id"], body={"name": new_name}).execute()
             log.info(f"  ✅ {name} → {new_name}")
             updated += 1
@@ -177,7 +184,7 @@ def update_amounts():
             failed += 1
 
     log.info("=" * 50)
-    log.info(f"金額更新完了: {updated}件更新 / {failed}件失敗")
+    log.info(f"金額更新完了: {updated}件更新 / {skipped}件変更なし / {failed}件失敗")
     log.info("=" * 50)
 
 
