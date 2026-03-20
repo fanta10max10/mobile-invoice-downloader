@@ -2158,9 +2158,8 @@ def _au_download_pdf_from_page(
                     log.info(f"    → 選択しました")
                     break
             if not selected:
-                # マッチしない場合は最初の有効な（解約済でない）回線を選択
-                log.warning(f"  電話番号 {phone} にマッチする回線が見つかりません。最初の回線を選択します")
-                number_radios.first.check(force=True)
+                log.error(f"  電話番号 {phone} にマッチする回線が見つかりません")
+                continue
 
             # 「選択」ボタンをクリック
             select_btn = page.get_by_text("選択", exact=True).or_(page.locator('button:has-text("選択")'))
