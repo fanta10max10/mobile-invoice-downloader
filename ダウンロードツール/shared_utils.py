@@ -503,7 +503,7 @@ def bootstrap_env_from_gsheet(script_dir: Path, display_name: str) -> None:
         "# BASE_SAVE_PATH=\n"
         "# TARGET_MONTH=202602\n"
         "HEADLESS=true\n"
-        "SECURITY_CODE_TIMEOUT=300\n",
+        "SECURITY_CODE_TIMEOUT=60\n",
         encoding="utf-8",
     )
     log.info(f".env を自動生成しました: {env_path}")
@@ -537,7 +537,7 @@ def create_billing_context(config: CarrierConfig, script_dir: Path) -> BillingCo
     headless = os.environ.get("HEADLESS", "true").lower() in ("true", "1", "yes")
     dry_run = os.environ.get("DRY_RUN", "false").lower() == "true"
     retry_phones = [p.strip() for p in os.environ.get("RETRY_PHONES", "").split(",") if p.strip()]
-    security_code_timeout = int(os.environ.get("SECURITY_CODE_TIMEOUT", "300"))
+    security_code_timeout = int(os.environ.get("SECURITY_CODE_TIMEOUT", "60"))
 
     logging.basicConfig(
         level=logging.INFO,
@@ -1964,19 +1964,63 @@ def _handle_au_2fa(ctx: BillingContext, page, phone_number: str) -> bool:
                 code_input.first.fill(code)
                 log.info("  確認コードを入力しました")
 
-                submit_btn = (
-                    page.locator('input[type="submit"]')
-                    .or_(page.locator('button[type="submit"]'))
-                    .or_(page.get_by_text("OK", exact=True))
-                    .or_(page.get_by_text("送信", exact=False))
-                )
-                _click_any_button(page, submit_btn, "確認コード送信ボタン")
-                page.wait_for_load_state("networkidle")
+                # 「次へ」ボタンをクリック（au 2段階認証ページ）
+                # JavaScriptでフォーム送信するボタンのため、複数の方法を試す
+                before_url = page.url
+                clicked = False
+
+                # 方法1: フォームを直接submit
+                try:
+                    result = page.evaluate("""() => {
+                        const form = document.querySelector('form');
+                        if (form) { form.submit(); return 'form-submit'; }
+                        return null;
+                    }""")
+                    if result:
+                        clicked = True
+                        log.info(f"  確認コード送信: {result}")
+                except Exception:
+                    pass
+
+                # 方法2: 「次へ」ボタンをクリック（form submitが効かなかった場合）
+                if not clicked:
+                    for selector in ['a:has-text("次へ")', 'button:has-text("次へ")',
+                                     '#btn_submit', 'input[type="submit"]', 'button[type="submit"]']:
+                        try:
+                            el = page.locator(selector).first
+                            if el.is_visible(timeout=1000):
+                                el.click()
+                                clicked = True
+                                log.info(f"  確認コード送信: {selector} をクリック")
+                                break
+                        except Exception:
+                            continue
+
+                if not clicked:
+                    try:
+                        page.get_by_text("次へ").first.click()
+                        clicked = True
+                        log.info("  確認コード送信: get_by_text('次へ') をクリック")
+                    except Exception:
+                        log.warning("  確認コード送信ボタンが見つかりませんでした")
+
+                # クリック後のページ遷移を待つ
+                try:
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    pass
                 time.sleep(3)
+                log.info(f"  確認コード送信後のURL: {page.url}")
 
                 if not _is_on_au_auth_page(ctx, page):
                     log.info("  au 2段階認証完了")
                     return True
+                # まだ認証ページにいる場合、ページテキストを確認
+                pt = _get_page_text(page)
+                if "確認コード" not in pt and "認証" not in pt and "2段階" not in pt:
+                    log.info("  認証ドメインにいるが認証ページではない → 完了とみなす")
+                    return True
+                log.info("  まだ認証ページにいます。リトライ...")
                 continue
         except Exception:
             pass
