@@ -1498,14 +1498,14 @@ def download_billing_pdf(
     month: str,
     save_dir: Path,
     pdf_types: set[str] | None = None,
-) -> bool:
-    """1回線分のPDFダウンロード処理。"""
+) -> str:
+    """1回線分のPDFダウンロード処理。"success"/"skipped"/"failed" を返す。"""
     if pdf_types is None:
         pdf_types = {"電話番号別"}
     log.info(f"=== {phone_number} の処理を開始 (PDFの種類: {', '.join(sorted(pdf_types))}) ===")
 
     if check_already_downloaded(ctx, save_dir, year, month, phone_number):
-        return True
+        return "skipped"
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=ctx.headless)
@@ -1542,14 +1542,14 @@ def download_billing_pdf(
                             "ログインまたはページ遷移失敗",
                             f"PDFダウンロードページに到達できませんでした。最終URL: {page.url}",
                         )
-                        return False
+                        return "failed"
                 else:
                     _save_debug_screenshot(
                         ctx, page, save_dir, phone_number, year, month,
                         "ログインまたはページ遷移失敗",
                         f"PDFダウンロードページに到達できませんでした。最終URL: {page.url}",
                     )
-                    return False
+                    return "failed"
 
             try:
                 context.storage_state(path=str(session_f))
@@ -1562,7 +1562,7 @@ def download_billing_pdf(
                     ctx, page, save_dir, phone_number, year, month,
                     "月選択失敗", f"対象月 {year}{month} の選択に失敗しました",
                 )
-                return False
+                return "failed"
 
             success = download_pdf_from_page(ctx, page, save_dir, year, month, phone_number, pdf_types)
             if not success:
@@ -1589,7 +1589,7 @@ def download_billing_pdf(
             context.close()
             browser.close()
 
-    return success
+    return "success" if success else "failed"
 
 
 # ══════════════════════════════════════════════════════════
@@ -1681,22 +1681,26 @@ def run_main(ctx: BillingContext) -> None:
         pw = str(row["パスワード"]).strip()
         pdf_types = parse_pdf_types(row.get("PDFの種類", "電話番号別"))
 
-        ok = download_billing_pdf(ctx, phone, pw, year, month, save_dir, pdf_types)
-        results.append((phone, ok))
+        result = download_billing_pdf(ctx, phone, pw, year, month, save_dir, pdf_types)
+        results.append((phone, result))
 
     # 結果サマリー
+    status_labels = {"success": "✅ 成功", "skipped": "⏭️ ダウンロード済み", "failed": "❌ 失敗"}
     log.info("=" * 50)
     log.info("処理結果サマリー:")
-    for phone, ok in results:
-        status = "\u2705 成功" if ok else "\u274c 失敗"
-        log.info(f"  {phone}: {status}")
+    for phone, result in results:
+        log.info(f"  {phone}: {status_labels.get(result, result)}")
 
-    succeeded = sum(1 for _, ok in results if ok)
-    log.info(f"  合計: {succeeded}/{len(results)} 件成功")
+    n_success = sum(1 for _, r in results if r == "success")
+    n_skipped = sum(1 for _, r in results if r == "skipped")
+    n_failed = sum(1 for _, r in results if r == "failed")
+    log.info(f"  合計: {n_success} 件成功 / {n_skipped} 件スキップ / {n_failed} 件失敗")
     log.info("=" * 50)
 
-    # ダウンロード履歴をスプレッドシートに記録
-    write_download_history(ctx.spreadsheet_id, ctx.config.carrier_name, results, year, month, save_dir)
+    # ダウンロード履歴をスプレッドシートに記録（スキップ分は記録しない）
+    history_results = [(p, r == "success") for p, r in results if r != "skipped"]
+    if history_results:
+        write_download_history(ctx.spreadsheet_id, ctx.config.carrier_name, history_results, year, month, save_dir)
 
     # Drive APIモード: 一時ディレクトリのクリーンアップ
     if ctx.temp_save_dir is not None and ctx.temp_save_dir.exists():
@@ -1706,7 +1710,7 @@ def run_main(ctx: BillingContext) -> None:
         except Exception as e:
             log.warning(f"一時ディレクトリの削除に失敗: {e}")
 
-    failed = [p for p, ok in results if not ok]
+    failed = [p for p, r in results if r == "failed"]
     if failed:
         log.warning(f"{len(failed)} 件の失敗がありました")
         sys.exit(1)
