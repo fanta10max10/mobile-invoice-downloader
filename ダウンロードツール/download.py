@@ -85,6 +85,7 @@ def update_amounts():
     """
     script_dir = Path(__file__).resolve().parent
     ctx = create_billing_context(ALL_CARRIERS[0], script_dir=script_dir)
+    resolve_save_path(ctx)  # DriveContext を初期化
 
     if not ctx.drive_ctx:
         log.error("Drive APIモードでのみ実行可能です。PDF保存先フォルダにDriveのURLを設定してください。")
