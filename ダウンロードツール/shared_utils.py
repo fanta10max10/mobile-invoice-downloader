@@ -2132,6 +2132,47 @@ def _au_download_pdf_from_page(
             log.error(f"  ダウンロードページへの遷移に失敗: {e}")
             continue
 
+        # 回線選択画面が表示される場合（複数契約が紐づいたau ID）
+        number_radios = page.locator('input[type="radio"][name="number"]')
+        if number_radios.count() > 0:
+            log.info(f"  回線選択画面を検出（{number_radios.count()}件の契約）")
+            # 電話番号にマッチする回線を選択
+            phone_digits = re.sub(r'\D', '', phone)
+            selected = False
+            for i in range(number_radios.count()):
+                radio = number_radios.nth(i)
+                # ラジオボタンの隣接テキストから電話番号を取得
+                label_text = ""
+                try:
+                    label_text = radio.evaluate("""el => {
+                        const label = el.closest('label') || el.parentElement;
+                        return label ? label.textContent.trim() : '';
+                    }""")
+                except Exception:
+                    pass
+                label_digits = re.sub(r'\D', '', label_text.split('\n')[0] if label_text else "")
+                log.info(f"    契約[{i}]: label={label_text.strip()[:60]}")
+                if phone_digits in label_digits or label_digits in phone_digits:
+                    radio.check(force=True)
+                    selected = True
+                    log.info(f"    → 選択しました")
+                    break
+            if not selected:
+                # マッチしない場合は最初の有効な（解約済でない）回線を選択
+                log.warning(f"  電話番号 {phone} にマッチする回線が見つかりません。最初の回線を選択します")
+                number_radios.first.check(force=True)
+
+            # 「選択」ボタンをクリック
+            select_btn = page.get_by_text("選択", exact=True).or_(page.locator('button:has-text("選択")'))
+            try:
+                select_btn.first.click()
+                page.wait_for_load_state("networkidle")
+                time.sleep(3)
+                log.info(f"  回線選択後のURL: {page.url}")
+            except Exception as e:
+                log.error(f"  回線選択ボタンのクリックに失敗: {e}")
+                continue
+
         # 対象月のラジオボタンを選択
         target_ym = f"{year}{month}"
         radios = page.locator('input[type="radio"][name="bill"]')
