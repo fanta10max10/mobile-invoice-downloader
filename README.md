@@ -188,14 +188,15 @@ DRY_RUN=true python3 download.py
   端末    : iPhoneAir
   SMSに届いた3桁のセキュリティ番号を入力してください
   ターミナル入力 または 以下のコマンドで渡してください:
-    echo '123' > /tmp/softbank_security_code.txt
+    echo '123' > /tmp/softbank_security_code.txt   ← SoftBankの場合
+    echo '123' > /tmp/ymobile_security_code.txt    ← Y!mobileの場合
 ============================================================
 ```
 
 - **ターミナル直接実行時**: そのまま3桁を入力してEnterを押す
-- **バックグラウンド実行時**: ファイル経由でコードを渡す
-  - Mac/Linux: `echo '854' > /tmp/softbank_security_code.txt`
-  - Windows: `echo 854 > %TEMP%\softbank_security_code.txt`
+- **バックグラウンド実行時**: ファイル経由でコードを渡す（キャリアに応じてファイル名が異なる）
+  - SoftBank: `echo '854' > /tmp/softbank_security_code.txt`
+  - Y!mobile: `echo '854' > /tmp/ymobile_security_code.txt`
 - 入力待機時間は `SECURITY_CODE_TIMEOUT`（デフォルト300秒）で変更可能
 
 ### セッションの再利用
@@ -204,17 +205,17 @@ DRY_RUN=true python3 download.py
 
 | OS | セッションファイルの場所 |
 |---|---|
-| Mac/Linux | `/tmp/softbank_session_{電話番号}.json` |
-| Windows | `%TEMP%\softbank_session_{電話番号}.json` |
+| Mac/Linux | `/tmp/softbank_session_{電話番号}.json`（SoftBank）<br>`/tmp/ymobile_session_{電話番号}.json`（Y!mobile） |
+| Windows | `%TEMP%\softbank_session_{電話番号}.json`（SoftBank）<br>`%TEMP%\ymobile_session_{電話番号}.json`（Y!mobile） |
 
 認証エラーが解消しない場合はセッションファイルを削除して再実行する：
 
 ```bash
 # Mac/Linux
-rm /tmp/softbank_session_*.json
+rm /tmp/softbank_session_*.json /tmp/ymobile_session_*.json
 
 # Windows
-del %TEMP%\softbank_session_*.json
+del %TEMP%\softbank_session_*.json %TEMP%\ymobile_session_*.json
 ```
 
 ---
