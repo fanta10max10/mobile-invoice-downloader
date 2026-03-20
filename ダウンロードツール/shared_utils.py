@@ -856,14 +856,14 @@ def extract_amount_from_pdf(pdf_path: Path, phone: str = "") -> str:
                                 log.info(f"  PDF金額取得（{target_label}）: {a}円")
                                 return f"{int(a)}円"
         else:
-            # SoftBank/Ymobile: 「計」の後の金額
-            for pat in [r'(?<![小合])計\s*([\d,]+)', r'小計\s*([\d,]+)']:
-                m = re.search(pat, text)
-                if m:
-                    a = m.group(1).replace(',', '')
-                    if a.isdigit():
-                        log.info(f"  PDF金額取得: {a}円")
-                        return f"{int(a)}円"
+            # SoftBank/Ymobile: 「計」（個別回線の税抜合計）× 1.1 で税込算出
+            # 「ご請求金額」は同一請求先の全回線合計なので使わない
+            m_total = re.search(r'(?<![小合課])計\s*([\d,]+)', text)
+            if m_total:
+                a = int(m_total.group(1).replace(',', ''))
+                tax_inclusive = a + int(a * 0.1)
+                log.info(f"  PDF金額取得（計×1.1）: {tax_inclusive}円 (税抜{a}円)")
+                return f"{tax_inclusive}円"
         return ""
     except Exception as e:
         log.warning(f"  PDF金額取得エラー: {e}")
