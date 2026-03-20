@@ -811,7 +811,7 @@ def extract_amount_from_pdf(pdf_path: Path, phone: str = "") -> str:
             digits = re.sub(r'\D', '', phone)
             formatted = f"{digits[:3]}-{digits[3:7]}-{digits[7:]}" if len(digits) >= 10 else phone
 
-            # 方式1（最優先）: 電話番号セクション内の「10%消費税の課税対象額」から税込算出
+            # 方式1（最優先）: 電話番号セクション内の「10%消費税の課税対象額」
             # 全au/UQ PDFに各回線ごとに記載されるため最も汎用的
             idx = text.find(formatted)
             if idx >= 0:
@@ -821,10 +821,9 @@ def extract_amount_from_pdf(pdf_path: Path, phone: str = "") -> str:
                 section = after[:section_end]
                 tax_match = re.search(r'10%消費税の課税対象額\s*([\d,]+)円', section)
                 if tax_match:
-                    taxable = int(tax_match.group(1).replace(',', ''))
-                    total = taxable + int(taxable * 0.1)
-                    log.info(f"  PDF金額取得（課税対象額から算出）: {total}円 (課税対象額{taxable}円)")
-                    return f"{total}円"
+                    a = tax_match.group(1).replace(',', '')
+                    log.info(f"  PDF金額取得（課税対象額）: {a}円(税抜)")
+                    return f"{int(a)}円(税抜)"
 
             # 方式2: 「(内訳)」セクションの電話番号リスト＋金額リスト対応（5回線まとめ等）
             breakdown_match = re.search(r'\(内訳\)([\s\S]{0,500}?)(?:au|※|ご利用)', text)
@@ -838,8 +837,8 @@ def extract_amount_from_pdf(pdf_path: Path, phone: str = "") -> str:
                     if phone_idx < len(amounts):
                         a = amounts[phone_idx].replace(',', '')
                         if a.isdigit() and 0 < int(a) <= 9999999:
-                            log.info(f"  PDF金額取得（内訳対応）: {a}円 (電話番号{phone_idx+1}/{len(phone_list)})")
-                            return f"{int(a)}円"
+                            log.info(f"  PDF金額取得（内訳対応）: {a}円(税抜) (電話番号{phone_idx+1}/{len(phone_list)})")
+                            return f"{int(a)}円(税抜)"
 
             # 方式3: サービス別ご利用料金セクション（au単一回線）
             amount_block = re.search(r'サービス別ご利用料金([\s\S]{0,500}?)(?:ご利用クレジット|●)', text)
@@ -853,17 +852,17 @@ def extract_amount_from_pdf(pdf_path: Path, phone: str = "") -> str:
                         if label_idx < len(amounts_in_block):
                             a = amounts_in_block[label_idx].replace(',', '')
                             if a.isdigit() and 0 < int(a) <= 9999999:
-                                log.info(f"  PDF金額取得（{target_label}）: {a}円")
-                                return f"{int(a)}円"
+                                log.info(f"  PDF金額取得（{target_label}）: {a}円(税抜)")
+                                return f"{int(a)}円(税抜)"
         else:
-            # SoftBank/Ymobile: 「計」（個別回線の税抜合計）× 1.1 で税込算出
-            # 「ご請求金額」は同一請求先の全回線合計なので使わない
+            # SoftBank/Ymobile: 「計」（個別回線の税抜合計）
+            # 合計に対して消費税計算されるため個別回線の正確な税込は不明 → 税抜で記録
             m_total = re.search(r'(?<![小合課])計\s*([\d,]+)', text)
             if m_total:
-                a = int(m_total.group(1).replace(',', ''))
-                tax_inclusive = a + int(a * 0.1)
-                log.info(f"  PDF金額取得（計×1.1）: {tax_inclusive}円 (税抜{a}円)")
-                return f"{tax_inclusive}円"
+                a = m_total.group(1).replace(',', '')
+                if a.isdigit():
+                    log.info(f"  PDF金額取得: {a}円(税抜)")
+                    return f"{int(a)}円(税抜)"
         return ""
     except Exception as e:
         log.warning(f"  PDF金額取得エラー: {e}")
