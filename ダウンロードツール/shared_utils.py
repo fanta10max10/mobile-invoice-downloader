@@ -1628,8 +1628,8 @@ def select_target_month(ctx: BillingContext, page, year: str, month: str) -> boo
 
 
 def _download_single_pdf(ctx: BillingContext, page, link, label: str, save_dir: Path,
-                          year: str, month: str, phone: str, amount: str) -> bool:
-    """PDFリンクを1件ダウンロードして保存（またはDriveにアップロード）する。最大3回リトライ。"""
+                          year: str, month: str, phone: str, amount: str) -> "str | None":
+    """PDFリンクを1件ダウンロードして保存。成功時は最終ファイル名、失敗時はNoneを返す。"""
     dest = None
     for attempt in range(3):
         try:
@@ -1659,6 +1659,7 @@ def _download_single_pdf(ctx: BillingContext, page, link, label: str, save_dir: 
                         dest = new_dest
                         log.info(f"  PDFから金額取得・リネーム: {new_filename}")
 
+            final_name = dest.name
             if ctx.drive_ctx is not None:
                 folder_id = ctx.drive_ctx.get_folder_id(year, month)
                 ok = ctx.drive_ctx.upload(dest, folder_id)
@@ -1666,10 +1667,10 @@ def _download_single_pdf(ctx: BillingContext, page, link, label: str, save_dir: 
                     dest.unlink()
                 except Exception:
                     pass
-                return ok
+                return final_name if ok else None
 
             log.info(f"  [{label}] 保存完了: {dest}")
-            return True
+            return final_name
         except Exception as e:
             if dest and dest.exists():
                 try:
@@ -1682,14 +1683,14 @@ def _download_single_pdf(ctx: BillingContext, page, link, label: str, save_dir: 
                 time.sleep(delay)
             else:
                 log.warning(f"  [{label}] ダウンロード失敗 (全3回試行): {e}")
-    return False
+    return None
 
 
 def download_pdf_from_page(
     ctx: BillingContext, page, save_dir: Path, year: str, month: str, phone: str,
     pdf_types: set[str] | None = None,
-) -> bool:
-    """PDFダウンロードページから指定種別のPDFをダウンロードする。"""
+) -> tuple[bool, list[str]]:
+    """PDFダウンロードページから指定種別のPDFをダウンロードする。(成功, ファイル名リスト)を返す。"""
     if ctx.config.carrier_family == "au":
         return _au_download_pdf_from_page(ctx, page, save_dir, year, month, phone, pdf_types)
     if pdf_types is None:
@@ -1709,13 +1710,16 @@ def download_pdf_from_page(
         log.info("  請求金額の取得をスキップしました")
 
     any_success = False
+    filenames = []
 
     if "一括" in pdf_types:
         log.info("一括印刷用PDFを確認中...")
         bulk_link = page.locator('a[href*="doPrintSbmAll"]')
         if bulk_link.count() > 0 and bulk_link.first.is_visible():
-            if _download_single_pdf(ctx, page, bulk_link.first, "一括", save_dir, year, month, phone, amount):
+            fname = _download_single_pdf(ctx, page, bulk_link.first, "一括", save_dir, year, month, phone, amount)
+            if fname:
                 any_success = True
+                filenames.append(fname)
         else:
             log.info("  一括印刷用PDFリンクが見つかりませんでした")
 
@@ -1727,17 +1731,21 @@ def download_pdf_from_page(
                 link_text = (link.text_content() or "").strip()
                 log.info(f"  doPrintMsnリンク[{i}]: {link_text}")
                 if "電話番号別" in link_text and "電話番号別" in pdf_types:
-                    if _download_single_pdf(ctx, page, link, "電話番号別", save_dir, year, month, phone, amount):
+                    fname = _download_single_pdf(ctx, page, link, "電話番号別", save_dir, year, month, phone, amount)
+                    if fname:
                         any_success = True
+                        filenames.append(fname)
                 elif "機種別" in link_text and "機種別" in pdf_types:
-                    if _download_single_pdf(ctx, page, link, "機種別", save_dir, year, month, phone, amount):
+                    fname = _download_single_pdf(ctx, page, link, "機種別", save_dir, year, month, phone, amount)
+                    if fname:
                         any_success = True
+                        filenames.append(fname)
         else:
             log.info("  電話番号別/機種別PDFリンクが見つかりませんでした")
 
     if not any_success:
         log.error("指定した種別のPDFがダウンロードできませんでした")
-    return any_success
+    return (any_success, filenames)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1754,7 +1762,7 @@ def download_billing_pdf(
     pdf_types: set[str] | None = None,
     is_cancelled: bool = False,
 ) -> str:
-    """1回線分のPDFダウンロード処理。"success"/"skipped"/"failed" を返す。"""
+    """1回線分のPDFダウンロード処理。(結果, ファイル名リスト) を返す。結果は "success"/"skipped"/"failed"。"""
     if pdf_types is None:
         pdf_types = {"電話番号別"}
     status_label = "（解約済）" if is_cancelled else ""
@@ -1762,7 +1770,7 @@ def download_billing_pdf(
 
     all_done, remaining_types = check_already_downloaded(ctx, save_dir, year, month, phone_number, pdf_types)
     if all_done:
-        return "skipped"
+        return ("skipped", [])
     if remaining_types != pdf_types:
         log.info(f"  未ダウンロード: {', '.join(sorted(remaining_types))}")
     pdf_types = remaining_types
@@ -1802,7 +1810,7 @@ def download_billing_pdf(
                             "ログインまたはページ遷移失敗",
                             f"PDFダウンロードページに到達できませんでした。最終URL: {page.url}",
                         )
-                        return "failed"
+                        return ("failed", [])
                 else:
                     _save_debug_screenshot(
                         ctx, page, save_dir, phone_number, year, month,
@@ -1826,7 +1834,7 @@ def download_billing_pdf(
                     )
                     return "failed"
 
-            success = download_pdf_from_page(ctx, page, save_dir, year, month, phone_number, pdf_types)
+            success, dl_filenames = download_pdf_from_page(ctx, page, save_dir, year, month, phone_number, pdf_types)
             if not success:
                 _save_debug_screenshot(
                     ctx, page, save_dir, phone_number, year, month,
@@ -1851,7 +1859,7 @@ def download_billing_pdf(
             context.close()
             browser.close()
 
-    return "success" if success else "failed"
+    return ("success", dl_filenames) if success else ("failed", [])
 
 
 # ══════════════════════════════════════════════════════════
@@ -1955,12 +1963,10 @@ def run_main(ctx: BillingContext) -> None:
         pdf_types = parse_pdf_types(row.get("PDFの種類", ""), ctx.config.carrier_family)
         is_cancelled = str(row.get("状態", "")).strip() == "解約済"
 
-        result = download_billing_pdf(ctx, phone, pw, year, month, save_dir, pdf_types, is_cancelled)
+        result, fnames = download_billing_pdf(ctx, phone, pw, year, month, save_dir, pdf_types, is_cancelled)
         results.append((phone, result))
-        if result == "success":
-            # ファイル名を構築して記録（Drive APIモードではファイルが既に削除済みのため）
-            filename = build_filename(ctx, year, month, phone)
-            downloaded_filenames[phone] = [filename]
+        if result == "success" and fnames:
+            downloaded_filenames[phone] = fnames
 
     # ダウンロード履歴をスプレッドシートに記録（スキップ分は記録しない）
     history_results = [(p, r == "success") for p, r in results if r != "skipped"]
@@ -2349,8 +2355,8 @@ def _au_select_target_month(ctx: BillingContext, page, year: str, month: str) ->
 def _au_download_pdf_from_page(
     ctx: BillingContext, page, save_dir: Path, year: str, month: str, phone: str,
     pdf_types: set[str] | None = None,
-) -> bool:
-    """au WEB de 請求書からPDFをダウンロードする。
+) -> tuple[bool, list[str]]:
+    """au WEB de 請求書からPDFをダウンロードする。(成功, ファイル名リスト)を返す。
     pdf_types: {"請求書"}, {"領収書"}, {"支払証明書"} のいずれか
     各種別ごとにダウンロードページのURLパラメータが異なる:
       請求書: DlCals=01, 領収書: DlCals=02, 支払証明書: DlCals=03
@@ -2362,6 +2368,7 @@ def _au_download_pdf_from_page(
 
     dl_params = {"請求書": "01", "領収書": "02", "支払証明書": "03"}
     any_success = False
+    filenames = []
 
     for pdf_type in sorted(pdf_types):
         dl_cal = dl_params.get(pdf_type)
@@ -2561,6 +2568,7 @@ def _au_download_pdf_from_page(
                         dest = new_dest
                         log.info(f"  PDFから金額取得・リネーム: {new_filename}")
 
+                final_name = dest.name
                 if ctx.drive_ctx is not None:
                     folder_id = ctx.drive_ctx.get_folder_id(year, month)
                     ok = ctx.drive_ctx.upload(dest, folder_id)
@@ -2570,10 +2578,12 @@ def _au_download_pdf_from_page(
                         pass
                     if ok:
                         any_success = True
+                        filenames.append(final_name)
                     break
                 else:
                     log.info(f"  [{pdf_type}] 保存完了: {dest}")
                     any_success = True
+                    filenames.append(final_name)
                     break
             except Exception as e:
                 if attempt < 2:
@@ -2584,4 +2594,4 @@ def _au_download_pdf_from_page(
 
     if not any_success:
         log.error("指定した種別のPDFがダウンロードできませんでした")
-    return any_success
+    return (any_success, filenames)
