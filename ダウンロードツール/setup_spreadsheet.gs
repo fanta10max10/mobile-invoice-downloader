@@ -625,6 +625,7 @@ function _normalizeCarrierName_(text) {
 
 /**
  * 回線管理スプレッドシートの月別シートから電話番号を収集する。
+ * 全月シートをマージして読み込む（新しい月の情報で上書き）。
  * セクション分け構造に対応（キャリアラベル行 → ヘッダー行 → データ行）。
  */
 function _getAllPhonesFromMonthSheets_() {
@@ -643,52 +644,68 @@ function _getAllPhonesFromMonthSheets_() {
   const monthSheets = ss.getSheets().filter(ws => /.*\d+月$/.test(ws.getName()));
   if (monthSheets.length === 0) return result;
 
+  // 古い月から順に処理（新しい月の情報で上書き）
   monthSheets.sort((a, b) => _parseMonthSheetNum_(a.getName()) - _parseMonthSheetNum_(b.getName()));
-  let targetSheet = null;
-  for (let i = monthSheets.length - 1; i >= 0; i--) {
-    if (monthSheets[i].getLastRow() > 1) { targetSheet = monthSheets[i]; break; }
+
+  // phone → { carrier, cancelled, device, name, loginId } のマップ（全月マージ用）
+  const phoneMap = {};
+
+  for (const sheet of monthSheets) {
+    if (sheet.getLastRow() <= 1) continue;
+    const rows = sheet.getDataRange().getValues();
+    let cols = null, sectionCarrier = null;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+
+      // セクションラベル行
+      const labelCarrier = _detectCarrierLabel_(row);
+      if (labelCarrier) { sectionCarrier = labelCarrier; cols = null; continue; }
+
+      // ヘッダー行
+      const phoneColIdx = row.findIndex(c => String(c).trim() === "電話番号");
+      if (phoneColIdx !== -1) {
+        cols = {};
+        row.forEach((c, j) => { const k = String(c).trim(); if (k) cols[k] = j; });
+        continue;
+      }
+
+      if (!cols || cols["電話番号"] === undefined) continue;
+
+      const phone = _normalizePhone_(row[cols["電話番号"]]);
+      if (!phone || !/^\d{10,13}$/.test(phone)) continue;
+
+      let carrier = cols["キャリア"] !== undefined ? _normalizeCarrierName_(row[cols["キャリア"]]) : null;
+      if (!carrier) carrier = sectionCarrier;
+      if (!carrier || !result[carrier]) continue;
+
+      const ci = cols["解約済"];
+      const cancelled = ci !== undefined && String(row[ci] || "").toUpperCase() === "TRUE";
+      const di = cols["運用端末"];
+      const device = di !== undefined ? String(row[di] || "").trim() : "";
+      const ni = cols["名義"] !== undefined ? cols["名義"] : cols["契約者名"];
+      const name = ni !== undefined ? String(row[ni] || "").trim() : "";
+      const ii = cols["ID"];
+      const loginId = ii !== undefined ? String(row[ii] || "").trim() : "";
+
+      // 新しい月の情報で上書き（ただし空値では上書きしない）
+      const key = carrier + ":" + phone;
+      const existing = phoneMap[key];
+      if (existing) {
+        existing.cancelled = cancelled;
+        if (device) existing.device = device;
+        if (name) existing.name = name;
+        if (loginId) existing.loginId = loginId;
+      } else {
+        phoneMap[key] = { phone, carrier, cancelled, device, name, loginId };
+      }
+    }
   }
-  if (!targetSheet) return result;
 
-  const rows = targetSheet.getDataRange().getValues();
-  let cols = null, sectionCarrier = null;
-
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-
-    // セクションラベル行
-    const labelCarrier = _detectCarrierLabel_(row);
-    if (labelCarrier) { sectionCarrier = labelCarrier; cols = null; continue; }
-
-    // ヘッダー行
-    const phoneColIdx = row.findIndex(c => String(c).trim() === "電話番号");
-    if (phoneColIdx !== -1) {
-      cols = {};
-      row.forEach((c, j) => { const k = String(c).trim(); if (k) cols[k] = j; });
-      continue;
-    }
-
-    if (!cols || cols["電話番号"] === undefined) continue;
-
-    const phone = _normalizePhone_(row[cols["電話番号"]]);
-    if (!phone || !/^\d{10,13}$/.test(phone)) continue;
-
-    let carrier = cols["キャリア"] !== undefined ? _normalizeCarrierName_(row[cols["キャリア"]]) : null;
-    if (!carrier) carrier = sectionCarrier;
-    if (!carrier || !result[carrier]) continue;
-
-    const ci = cols["解約済"];
-    const cancelled = ci !== undefined && String(row[ci] || "").toUpperCase() === "TRUE";
-    const di = cols["運用端末"];
-    const device = di !== undefined ? String(row[di] || "").trim() : "";
-    const ni = cols["名義"] !== undefined ? cols["名義"] : cols["契約者名"];
-    const name = ni !== undefined ? String(row[ni] || "").trim() : "";
-    const ii = cols["ID"];
-    const loginId = ii !== undefined ? String(row[ii] || "").trim() : "";
-
-    if (!result[carrier].some(p => p.phone === phone)) {
-      result[carrier].push({ phone, cancelled, device, name, loginId });
-    }
+  // phoneMap → result に変換
+  for (const entry of Object.values(phoneMap)) {
+    const { phone, carrier, cancelled, device, name, loginId } = entry;
+    result[carrier].push({ phone, cancelled, device, name, loginId });
   }
   return result;
 }
