@@ -123,11 +123,12 @@ function setupSettingsSheet_(ss) {
 
 
 /**
- * 認証情報シート: 電話番号 | キャリア | PDFの種類 | 運用端末 | 状態
+ * 認証情報シート: 電話番号 | キャリア | PDFの種類 | 運用端末 | 状態 | au ID
  * - サイドバーから選択した電話番号が書き込まれる
  * - パスワードは設定シートで一元管理（認証情報シートにはパスワード列を持たない）
  * - 運用端末はサイドバー保存時に回線管理スプレッドシートから自動設定
  * - 状態列: 有効回線は「契約中」、解約済回線は「解約済」と表示
+ * - au ID列: au/UQ回線のログインIDを回線管理スプレッドシートの「ID」列から自動設定
  */
 function setupAuthSheet_(ss) {
   let sheet = ss.getSheetByName(AUTH_SHEET_NAME);
@@ -137,8 +138,8 @@ function setupAuthSheet_(ss) {
     ss.moveActiveSheet(2);
   }
 
-  // ヘッダーを正しい5列に設定（旧形式からの移行対応）
-  const correctHeaders = ["電話番号", "キャリア", "PDFの種類", "運用端末", "状態"];
+  // ヘッダーを正しい6列に設定（旧形式からの移行対応）
+  const correctHeaders = ["電話番号", "キャリア", "PDFの種類", "運用端末", "状態", "au ID"];
   const currentHeaders = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0]
     .map(h => String(h || "").trim());
 
@@ -151,8 +152,8 @@ function setupAuthSheet_(ss) {
   // ヘッダーが正しくなければ上書き
   const h0 = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0]
     .map(v => String(v || "").trim());
-  if (h0.length < 5 || h0[0] !== "電話番号" || h0[1] !== "キャリア" || h0[3] !== "運用端末" || h0[4] !== "状態") {
-    sheet.getRange(1, 1, 1, 5).setValues([correctHeaders])
+  if (h0.length < 6 || h0[0] !== "電話番号" || h0[1] !== "キャリア" || h0[3] !== "運用端末" || h0[4] !== "状態" || h0[5] !== "au ID") {
+    sheet.getRange(1, 1, 1, 6).setValues([correctHeaders])
       .setFontWeight("bold").setBackground("#4285F4").setFontColor("#FFFFFF").setHorizontalAlignment("center");
   }
 
@@ -161,6 +162,7 @@ function setupAuthSheet_(ss) {
   sheet.setColumnWidth(3, 220);
   sheet.setColumnWidth(4, 160);
   sheet.setColumnWidth(5, 100);
+  sheet.setColumnWidth(6, 200);
   sheet.getRange("A:A").setNumberFormat("@");
 
   // キャリア列にドロップダウンを設定
@@ -466,13 +468,14 @@ function savePhoneSelections(selections) {
 
     // 解約済番号セット・運用端末・名義マップ
     const cancelledSet = new Set();
-    const deviceMap = {}, nameMap = {};
+    const deviceMap = {}, nameMap = {}, loginIdMap = {};
     const ALL_CARRIERS = ["SoftBank", "Ymobile", "au", "UQmobile"];
     for (const carrier of ALL_CARRIERS) {
       for (const p of (allPhones[carrier] || [])) {
         if (p.cancelled) cancelledSet.add(p.phone);
         if (p.device) deviceMap[p.phone] = p.device;
         if (p.name) nameMap[p.phone] = p.name;
+        if (p.loginId) loginIdMap[p.phone] = p.loginId;
       }
     }
 
@@ -485,7 +488,7 @@ function savePhoneSelections(selections) {
 
     // 既存データを全クリア（ヘッダー行以外）
     const lastRow = authSheet.getLastRow();
-    const lastCol = Math.max(authSheet.getLastColumn(), 5);
+    const lastCol = Math.max(authSheet.getLastColumn(), 6);
     if (lastRow > 1) {
       const rows = lastRow - 1;
       authSheet.getRange(2, 1, rows, lastCol).clearContent();
@@ -505,7 +508,7 @@ function savePhoneSelections(selections) {
         if (cancelledSet.has(phone)) continue;
         const defaultPdfType = (carrier === "au" || carrier === "UQmobile") ? "請求書" : "電話番号別";
         const pdfType = sel[phone].pdfType || defaultPdfType;
-        activeRows.push([phone, carrier, pdfType, deviceMap[phone] || "", "契約中"]);
+        activeRows.push([phone, carrier, pdfType, deviceMap[phone] || "", "契約中", loginIdMap[phone] || ""]);
         linkData[carrier].push({ phone, name: nameMap[phone] || "" });
       }
     }
@@ -514,21 +517,21 @@ function savePhoneSelections(selections) {
     for (const carrier of ALL_CARRIERS) {
       for (const p of (allPhones[carrier] || [])) {
         if (p.cancelled) {
-          cancelledRows.push([p.phone, carrier, "", p.device || "", "解約済"]);
+          cancelledRows.push([p.phone, carrier, "", p.device || "", "解約済", loginIdMap[p.phone] || ""]);
         }
       }
     }
 
     const allRows = [...activeRows, ...cancelledRows];
     if (allRows.length > 0) {
-      authSheet.getRange(2, 1, allRows.length, 5).setValues(allRows);
+      authSheet.getRange(2, 1, allRows.length, 6).setValues(allRows);
     }
     authSheet.getRange("A:A").setNumberFormat("@");
 
     // 解約済行をグレーアウト+取り消し線
     if (cancelledRows.length > 0) {
       const startRow = activeRows.length + 2;
-      authSheet.getRange(startRow, 1, cancelledRows.length, 5)
+      authSheet.getRange(startRow, 1, cancelledRows.length, 6)
         .setFontLine("line-through").setFontColor("#999999").setBackground("#f0f0f0");
       // 解約済行のドロップダウンバリデーションをクリア（空値を許容するため）
       authSheet.getRange(startRow, 2, cancelledRows.length, 1).clearDataValidations();
@@ -671,9 +674,11 @@ function _getAllPhonesFromMonthSheets_() {
     const device = di !== undefined ? String(row[di] || "").trim() : "";
     const ni = cols["名義"] !== undefined ? cols["名義"] : cols["契約者名"];
     const name = ni !== undefined ? String(row[ni] || "").trim() : "";
+    const ii = cols["ID"];
+    const loginId = ii !== undefined ? String(row[ii] || "").trim() : "";
 
     if (!result[carrier].some(p => p.phone === phone)) {
-      result[carrier].push({ phone, cancelled, device, name });
+      result[carrier].push({ phone, cancelled, device, name, loginId });
     }
   }
   return result;

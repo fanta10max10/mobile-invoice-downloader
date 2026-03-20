@@ -85,6 +85,7 @@ class BillingContext:
     drive_ctx: "DriveContext | None" = None
     temp_save_dir: Path | None = None
     phone_device_map: dict[str, str] = field(default_factory=dict)
+    phone_login_id_map: dict[str, str] = field(default_factory=dict)  # 電話番号 → au ID
 
 
 # ══════════════════════════════════════════════════════════
@@ -687,14 +688,22 @@ def load_accounts(ctx: BillingContext) -> pd.DataFrame:
     log.info(f"  {len(df)} 件の回線を読み込みました")
 
     ctx.phone_device_map = {}
-    if df_all is not None and "運用端末" in df_all.columns:
+    ctx.phone_login_id_map = {}
+    if df_all is not None:
         for _, row in df_all.iterrows():
             phone = strip_hyphens(str(row.get("電話番号", "")))
+            if not re.match(r'^\d{10,13}$', phone):
+                continue
             device = str(row.get("運用端末", "")).strip()
-            if re.match(r'^\d{10,13}$', phone) and device:
+            if device:
                 ctx.phone_device_map[phone] = device
+            login_id = str(row.get("au ID", "")).strip()
+            if login_id:
+                ctx.phone_login_id_map[phone] = login_id
         if ctx.phone_device_map:
             log.info(f"  運用端末マップ: {len(ctx.phone_device_map)} 件")
+        if ctx.phone_login_id_map:
+            log.info(f"  au IDマップ: {len(ctx.phone_login_id_map)} 件")
 
     return df
 
@@ -1768,9 +1777,13 @@ def _do_au_login_and_navigate(ctx: BillingContext, page, phone_number: str, pass
         return True
 
     # Step 2: au ID ログイン（2ステップ: ID入力 → パスワード入力）
-    log.info("au ID ログイン情報を入力中...")
+    login_id = ctx.phone_login_id_map.get(phone_number, phone_number)
+    if login_id != phone_number:
+        log.info(f"au ID ログイン情報を入力中...（au ID: {login_id[:3]}***）")
+    else:
+        log.info("au ID ログイン情報を入力中...（au ID未設定のため電話番号を使用）")
     try:
-        # au ID（電話番号）入力
+        # au ID入力
         id_input = (
             page.locator('#loginAliasId')
             .or_(page.locator('input[name="loginAliasId"]'))
@@ -1778,7 +1791,7 @@ def _do_au_login_and_navigate(ctx: BillingContext, page, phone_number: str, pass
             .or_(page.locator('input[type="text"]').first)
         )
         id_input.first.wait_for(state="visible", timeout=10000)
-        id_input.first.fill(phone_number)
+        id_input.first.fill(login_id)
         log.info("  au IDを入力しました")
 
         # 「次へ」ボタンをクリック（au IDは2ステップログイン）
