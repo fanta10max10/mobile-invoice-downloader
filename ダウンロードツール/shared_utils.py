@@ -2251,8 +2251,23 @@ def _au_download_pdf_from_page(
         # 対象月のラジオボタンを選択
         target_ym = f"{year}{month}"
         radios = page.locator('input[type="radio"][name="bill"]')
+        radio_count = radios.count()
+        # name="bill" が無い場合、他のname属性のラジオボタンも探す
+        if radio_count == 0:
+            all_radios = page.locator('input[type="radio"]')
+            total = all_radios.count()
+            if total > 0:
+                # 最初のラジオボタンのname属性を取得して使う
+                alt_name = all_radios.first.get_attribute("name") or ""
+                log.info(f"  name='bill'のラジオボタンなし → name='{alt_name}'を検出（{total}件）")
+                if alt_name:
+                    radios = page.locator(f'input[type="radio"][name="{alt_name}"]')
+                    radio_count = radios.count()
+            else:
+                log.error(f"  ページにラジオボタンが1つもありません (URL: {page.url})")
+                continue
         month_selected = False
-        for i in range(radios.count()):
+        for i in range(radio_count):
             radio = radios.nth(i)
             value = radio.get_attribute("value") or ""
             if value.endswith(f"_{target_ym}"):
@@ -2261,7 +2276,12 @@ def _au_download_pdf_from_page(
                 month_selected = True
                 break
         if not month_selected:
-            log.error(f"  対象月 {target_ym} のラジオボタンが見つかりません")
+            # デバッグ: 実際にあるラジオボタンを列挙
+            found_values = []
+            for i in range(min(radio_count, 10)):
+                v = radios.nth(i).get_attribute("value") or ""
+                found_values.append(v)
+            log.error(f"  対象月 {target_ym} のラジオボタンが見つかりません（存在する値: {found_values}）")
             continue
 
         # 金額取得を試みる
