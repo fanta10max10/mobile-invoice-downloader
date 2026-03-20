@@ -445,6 +445,7 @@ function _getPhoneManagerHtml_() {
 // ── サーバー側: サイドバーAPI ──
 
 function getPhoneManagerData() {
+  _clearSettingsCache_();
   try {
     const target = _getTargetMonth_();
     return {
