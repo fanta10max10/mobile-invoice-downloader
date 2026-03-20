@@ -1288,7 +1288,62 @@ def do_login_and_navigate(ctx: BillingContext, page, phone_number: str, password
             log.error(f"  ログインフォームの操作に失敗: {e}")
             return False
 
-    # Step 3: ログイン後のエラー確認
+    # Step 3: 解約済SoftBank回線の場合、authページでもセキュリティ番号フローに入らない
+    # SoftBank IDログイン成功後、redirect_uriがmy.softbank.jpを経由するためエラーになるが
+    # WCO書面発行ページに直接遷移すればSoftBank IDのセッションクッキーで認証が通る
+    if is_cancelled and login_id and _is_on_auth_page(ctx, page):
+        log.info("  解約済回線: authページにいますが、form.submit()でリダイレクトを試みます")
+        try:
+            page.evaluate("document.querySelector('form').submit()")
+            time.sleep(5)
+            log.info(f"  form.submit()後のURL: {page.url}")
+        except Exception:
+            pass
+
+        # エラーページまたはまだauthの場合、WCO書面発行ページに直接遷移
+        current_url = page.url
+        if "error" in current_url or _is_on_auth_page(ctx, page):
+            log.info("  → WCO書面発行ページに直接遷移します")
+            try:
+                page.goto(ctx.config.bill_pdf_url, wait_until="networkidle")
+                time.sleep(3)
+                log.info(f"  WCO遷移後のURL: {page.url}")
+                # WCOアクセスでauthにリダイレクトされた場合、SoftBank IDで再ログイン
+                if _is_on_auth_page(ctx, page):
+                    phone_input2 = page.locator('input[name="telnum"]').or_(page.locator('input[name="loginId"]')).or_(page.locator('input[name="username"]'))
+                    try:
+                        if phone_input2.first.is_visible(timeout=3000):
+                            phone_input2.first.fill(login_id)
+                            pw_input2 = page.locator('input[type="password"]')
+                            pw_input2.first.fill(password)
+                            page.evaluate("document.querySelector('form').submit()")
+                            time.sleep(5)
+                            log.info(f"  WCO再ログイン後のURL: {page.url}")
+                    except Exception:
+                        pass
+            except Exception as e:
+                log.error(f"  WCO直接遷移に失敗: {e}")
+
+            # 最終確認
+            final = page.url
+            if wco_base_domain in final:
+                log.info("  WCOドメインに到達しました")
+                try:
+                    combobox = page.get_by_role("combobox").first
+                    if combobox.is_visible(timeout=5000):
+                        log.info("  PDFダウンロードページに到達しました！（解約済WCO直接遷移）")
+                        return True
+                except Exception:
+                    pass
+                pdf_link = page.locator('a[href*="doPrint"]')
+                if pdf_link.count() > 0:
+                    log.info("  PDFダウンロードページに到達しました！（解約済WCO直接遷移・PDFリンク検出）")
+                    return True
+
+            log.error(f"  解約済回線のWCO直接遷移でもPDFページに到達できませんでした (URL: {page.url})")
+            return False
+
+    # Step 3b: 通常のセキュリティ番号フロー
     if _is_on_auth_page(ctx, page):
         error_msg = page.locator(".err-area, .error, .alert-error, .sbid-error")
         if error_msg.count() > 0:
@@ -1306,35 +1361,6 @@ def do_login_and_navigate(ctx: BillingContext, page, phone_number: str, password
 
     # Step 4: PDFページへの到達確認・ナビゲーション
     if not _is_on_auth_page(ctx, page):
-        # 解約済回線のエラーページ検出: My SoftBankが拒否してもWCOは使える
-        current_url = page.url
-        if "AuthenticationImpossibleCanceledException" in current_url or "error" in current_url:
-            log.info("  解約済回線のエラーを検出 → WCO書面発行ページに直接遷移します")
-            try:
-                page.goto(ctx.config.certificate_url, wait_until="networkidle")
-                time.sleep(3)
-                log.info(f"  WCO遷移後のURL: {page.url}")
-                # WCOで認証が必要な場合
-                if _is_on_auth_page(ctx, page):
-                    if not _handle_security_code_flow(ctx, page, phone_number, password):
-                        return False
-                # PDFページ確認
-                try:
-                    combobox = page.get_by_role("combobox").first
-                    if combobox.is_visible(timeout=5000):
-                        log.info("  PDFダウンロードページに到達しました！（WCO直接遷移）")
-                        return True
-                except Exception:
-                    pass
-                pdf_link = page.locator('a[href*="doPrint"]')
-                if pdf_link.count() > 0:
-                    log.info("  PDFダウンロードページに到達しました！（WCO直接遷移・PDFリンク検出）")
-                    return True
-            except Exception as e:
-                log.error(f"  WCO直接遷移に失敗: {e}")
-            log.error(f"  解約済回線のWCO直接遷移でもPDFページに到達できませんでした")
-            return False
-
         try:
             combobox = page.get_by_role("combobox").first
             if combobox.is_visible(timeout=3000):

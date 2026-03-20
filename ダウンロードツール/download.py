@@ -6,10 +6,13 @@
   python3 download.py
 """
 
+import logging
 import sys
 from pathlib import Path
 
 from shared_utils import CarrierConfig, create_billing_context, run_main
+
+log = logging.getLogger(__name__)
 
 SOFTBANK_CONFIG = CarrierConfig(
     carrier_name="SoftBank",
@@ -74,8 +77,13 @@ def main():
     for config in ALL_CARRIERS:
         ctx = create_billing_context(config, script_dir=script_dir)
         total_failed += run_main(ctx) or 0
+
+    log.info("=" * 50)
     if total_failed > 0:
+        log.warning(f"全キャリア合計: {total_failed} 件の失敗がありました")
         sys.exit(1)
+    else:
+        log.info("全キャリアの処理が正常に完了しました")
 
 
 if __name__ == "__main__":
