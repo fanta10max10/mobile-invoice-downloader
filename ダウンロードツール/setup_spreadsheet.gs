@@ -113,7 +113,7 @@ function setupSettingsSheet_(ss) {
   _upsertSettingRow_(sheet, "パスワード", "",
     "SoftBank / Y!mobile 共通のログインパスワード。");
   _upsertSettingRow_(sheet, "au/UQパスワード", "",
-    "au / UQ mobile 共通のau IDパスワード。");
+    "au / UQ mobile 共通のログインパスワード。");
   _upsertSettingRow_(sheet, "au暗証番号", "",
     "au / UQ mobile の4桁暗証番号（請求書閲覧時に必要な場合あり）。", true);
   _upsertSettingRow_(sheet, "対象月", "自動（前月）",

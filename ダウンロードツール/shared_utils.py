@@ -2145,7 +2145,7 @@ def _au_download_pdf_from_page(
             log.error(f"  ダウンロードページへの遷移に失敗: {e}")
             continue
 
-        # 回線選択画面が表示される場合（複数契約が紐づいたau ID）
+        # 回線選択画面が表示される場合（複数契約が同一ログインIDに紐づく場合）
         number_radios = page.locator('input[type="radio"][name="number"]')
         if number_radios.count() > 0:
             log.info(f"  回線選択画面を検出（{number_radios.count()}件の契約）")
