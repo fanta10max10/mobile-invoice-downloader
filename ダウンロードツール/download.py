@@ -3,14 +3,22 @@
 携帯領収書管理 統合ダウンロードスクリプト
 
 使い方:
-  python3 download.py
+  python3 download.py                  # 通常ダウンロード
+  python3 download.py --update-amounts # Drive上のPDFファイル名に金額を反映
 """
 
+import argparse
 import logging
+import re
 import sys
+import tempfile
 from pathlib import Path
 
-from shared_utils import CarrierConfig, create_billing_context, run_main
+from shared_utils import (
+    CarrierConfig, create_billing_context, run_main,
+    extract_amount_from_pdf, resolve_save_path,
+    get_gspread_client, open_sheet,
+)
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +79,113 @@ UQ_CONFIG = CarrierConfig(
 ALL_CARRIERS = [SOFTBANK_CONFIG, YMOBILE_CONFIG, AU_CONFIG, UQ_CONFIG]
 
 
+def update_amounts():
+    """Drive上の _利用料金明細.pdf を探してPDFから金額取得→リネーム。
+    対象月のキャリアフォルダのみ探索するため高速。
+    """
+    script_dir = Path(__file__).resolve().parent
+    ctx = create_billing_context(ALL_CARRIERS[0], script_dir=script_dir)
+
+    if not ctx.drive_ctx:
+        log.error("Drive APIモードでのみ実行可能です。PDF保存先フォルダにDriveのURLを設定してください。")
+        sys.exit(1)
+
+    service = ctx.drive_ctx.service
+    root_id = ctx.drive_ctx.base_folder_id
+
+    # 対象月を取得
+    from shared_utils import get_target_month
+    year, month = get_target_month(ctx)
+    if not ctx.target_month:
+        try:
+            gc = get_gspread_client()
+            sh = open_sheet(gc, ctx.spreadsheet_id)
+            ws = sh.worksheet("設定")
+            from datetime import datetime
+            for row in ws.get_all_records():
+                if str(row.get("設定名", "")).strip() == "対象月":
+                    raw_val = row.get("値", "")
+                    val = str(raw_val).strip()
+                    if re.match(r"^\d{6}$", val):
+                        year, month = val[:4], val[4:6]
+                    elif m2 := re.match(r"^(\d{4})年(\d+)月$", val):
+                        year, month = m2.group(1), m2.group(2).zfill(2)
+                    elif isinstance(raw_val, datetime):
+                        year, month = str(raw_val.year), str(raw_val.month).zfill(2)
+                    break
+        except Exception:
+            pass
+    log.info(f"対象月: {year}年{month}月")
+
+    # root/YYYY/MM 直下のキャリアフォルダだけ探索
+    targets = []
+    year_folders = service.files().list(
+        q=f"name='{year}' and '{root_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+        fields="files(id)"
+    ).execute().get("files", [])
+    for yf in year_folders:
+        month_folders = service.files().list(
+            q=f"name='{month}' and '{yf['id']}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+            fields="files(id)"
+        ).execute().get("files", [])
+        for mf in month_folders:
+            carrier_folders = service.files().list(
+                q=f"'{mf['id']}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+                fields="files(id,name)"
+            ).execute().get("files", [])
+            for cf in carrier_folders:
+                pdfs = service.files().list(
+                    q=f"'{cf['id']}' in parents and mimeType='application/pdf' and name contains '_利用料金明細' and trashed=false",
+                    fields="files(id,name)"
+                ).execute().get("files", [])
+                targets.extend(pdfs)
+
+    log.info(f"金額未取得のPDF: {len(targets)}件")
+    if not targets:
+        log.info("金額未取得のPDFはありません。")
+        return
+
+    updated = 0
+    failed = 0
+    for f in targets:
+        name = f["name"]
+        m = re.match(r"(\d{6})_(\w+)_(\d+)_利用料金明細(_.+)?\.pdf", name)
+        if not m:
+            continue
+        ym, carrier, phone = m.group(1), m.group(2), m.group(3)
+        suffix = m.group(4) or ""  # "_支払証明書" など
+        is_au = carrier in ("au", "UQmobile")
+
+        content = service.files().get_media(fileId=f["id"]).execute()
+        tmp = Path(tempfile.mktemp(suffix=".pdf"))
+        tmp.write_bytes(content)
+        amount = extract_amount_from_pdf(tmp, phone if is_au else "")
+        tmp.unlink()
+
+        if amount:
+            new_name = f"{ym}_{carrier}_{phone}_{amount}{suffix}.pdf"
+            service.files().update(fileId=f["id"], body={"name": new_name}).execute()
+            log.info(f"  ✅ {name} → {new_name}")
+            updated += 1
+        else:
+            log.warning(f"  ❌ {name}: 金額取得失敗")
+            failed += 1
+
+    log.info("=" * 50)
+    log.info(f"金額更新完了: {updated}件更新 / {failed}件失敗")
+    log.info("=" * 50)
+
+
 def main():
+    parser = argparse.ArgumentParser(description="携帯領収書管理 統合ダウンロードスクリプト")
+    parser.add_argument("--update-amounts", action="store_true",
+                        help="Drive上のPDFファイル名に金額を反映（ダウンロードは行わない）")
+    args = parser.parse_args()
+
+    if args.update_amounts:
+        update_amounts()
+        return
+
     script_dir = Path(__file__).resolve().parent
     all_results = []
     for config in ALL_CARRIERS:
