@@ -2248,40 +2248,47 @@ def _au_download_pdf_from_page(
                 log.error(f"  回線選択ボタンのクリックに失敗: {e}")
                 continue
 
-        # 対象月のラジオボタンを選択
+        # 対象月を選択（請求書/領収書: ラジオボタン、支払証明書: チェックボックス）
         target_ym = f"{year}{month}"
-        radios = page.locator('input[type="radio"][name="bill"]')
-        radio_count = radios.count()
-        # name="bill" が無い場合、他のname属性のラジオボタンも探す
-        if radio_count == 0:
-            all_radios = page.locator('input[type="radio"]')
-            total = all_radios.count()
-            if total > 0:
-                # 最初のラジオボタンのname属性を取得して使う
-                alt_name = all_radios.first.get_attribute("name") or ""
-                log.info(f"  name='bill'のラジオボタンなし → name='{alt_name}'を検出（{total}件）")
-                if alt_name:
-                    radios = page.locator(f'input[type="radio"][name="{alt_name}"]')
-                    radio_count = radios.count()
-            else:
-                log.error(f"  ページにラジオボタンが1つもありません (URL: {page.url})")
-                continue
         month_selected = False
-        for i in range(radio_count):
-            radio = radios.nth(i)
-            value = radio.get_attribute("value") or ""
-            if value.endswith(f"_{target_ym}"):
-                radio.check(force=True)
-                log.info(f"  月を選択: value={value}")
-                month_selected = True
-                break
+
+        # まずラジオボタン（請求書・領収書）を試す
+        radios = page.locator('input[type="radio"][name="bill"]')
+        if radios.count() > 0:
+            for i in range(radios.count()):
+                radio = radios.nth(i)
+                value = radio.get_attribute("value") or ""
+                if value.endswith(f"_{target_ym}"):
+                    radio.check(force=True)
+                    log.info(f"  月を選択（ラジオ）: value={value}")
+                    month_selected = True
+                    break
+
+        # ラジオボタンがない場合、チェックボックス（支払証明書）を試す
         if not month_selected:
-            # デバッグ: 実際にあるラジオボタンを列挙
-            found_values = []
-            for i in range(min(radio_count, 10)):
-                v = radios.nth(i).get_attribute("value") or ""
-                found_values.append(v)
-            log.error(f"  対象月 {target_ym} のラジオボタンが見つかりません（存在する値: {found_values}）")
+            checkboxes = page.locator('input[type="checkbox"]')
+            cb_count = checkboxes.count()
+            if cb_count > 0:
+                log.info(f"  チェックボックス形式を検出（{cb_count}件）")
+                target_found = False
+                for i in range(cb_count):
+                    cb = checkboxes.nth(i)
+                    value = cb.get_attribute("value") or ""
+                    if value.endswith(f"_{target_ym}"):
+                        # 対象月はチェックを入れる
+                        if not cb.is_checked():
+                            cb.check(force=True)
+                        log.info(f"  対象月をチェック: value={value}")
+                        target_found = True
+                    else:
+                        # 対象月以外はチェックを外す
+                        if cb.is_checked():
+                            cb.uncheck(force=True)
+                if target_found:
+                    month_selected = True
+
+        if not month_selected:
+            log.error(f"  対象月 {target_ym} の選択肢が見つかりません (URL: {page.url})")
             continue
 
         # 金額取得を試みる
