@@ -877,17 +877,62 @@ def ensure_save_dir(ctx: BillingContext, base_path: str, year: str, month: str) 
 #  ダウンロード判定
 # ══════════════════════════════════════════════════════════
 
-def check_already_downloaded(ctx: BillingContext, save_dir: Path, year: str, month: str, phone: str) -> bool:
-    """指定の電話番号・月のPDFが既にダウンロード済みかチェックする"""
-    if ctx.drive_ctx is not None:
-        folder_id = ctx.drive_ctx.get_folder_id(year, month)
-        return ctx.drive_ctx.file_exists(folder_id, year, month, phone)
-    pattern = f"{year}{month}_{ctx.config.carrier_name}_{phone}_*.pdf"
-    existing = list(save_dir.glob(pattern))
-    if existing:
-        log.info(f"  既にダウンロード済み: {existing[0].name}  → スキップ")
-        return True
-    return False
+def check_already_downloaded(ctx: BillingContext, save_dir: Path, year: str, month: str, phone: str,
+                             pdf_types: set[str] | None = None) -> tuple[bool, set[str]]:
+    """指定の電話番号・月のPDFが既にダウンロード済みかチェックする。
+    返却: (all_downloaded, remaining_types) - 全種類DL済みならTrue、未DLの種類セット
+    """
+    if pdf_types is None:
+        pdf_types = {"電話番号別"}
+
+    # au/UQ: 種類ごとにサフィックスが異なる
+    type_suffixes = {"請求書": "", "領収書": "_領収書", "支払証明書": "_支払証明書",
+                     "電話番号別": "", "一括": "_一括", "機種別": "_機種別"}
+
+    remaining = set()
+    prefix = f"{year}{month}_{ctx.config.carrier_name}_{phone}_"
+
+    for pt in pdf_types:
+        suffix = type_suffixes.get(pt, "")
+        if ctx.drive_ctx is not None:
+            folder_id = ctx.drive_ctx.get_folder_id(year, month)
+            # サフィックス付きで検索
+            if suffix:
+                q = (f"name contains '{prefix}' and name contains '{suffix}.pdf' "
+                     f"and '{folder_id}' in parents and mimeType='application/pdf' and trashed=false")
+            else:
+                # 基本ファイル（サフィックスなし）: _領収書/_支払証明書/_一括/_機種別 を除外
+                q = (f"name contains '{prefix}' and '{folder_id}' in parents "
+                     f"and mimeType='application/pdf' and trashed=false")
+                # 除外サフィックスを持つファイルは基本ファイルではない
+            res = ctx.drive_ctx.service.files().list(q=q, fields="files(name)").execute()
+            files = res.get("files", [])
+            if suffix:
+                found = any(f["name"].endswith(f"{suffix}.pdf") for f in files)
+            else:
+                exclude = {"_領収書.pdf", "_支払証明書.pdf", "_一括.pdf", "_機種別.pdf"}
+                found = any(not any(f["name"].endswith(ex) for ex in exclude) for f in files)
+            if found:
+                log.info(f"  既にDriveにアップロード済み: {pt}  → スキップ")
+            else:
+                remaining.add(pt)
+        else:
+            if suffix:
+                pattern = f"{prefix}*{suffix}.pdf"
+            else:
+                pattern = f"{prefix}*.pdf"
+            existing = list(save_dir.glob(pattern))
+            if suffix:
+                found = len(existing) > 0
+            else:
+                exclude = {"_領収書.pdf", "_支払証明書.pdf", "_一括.pdf", "_機種別.pdf"}
+                found = any(not any(str(f).endswith(ex) for ex in exclude) for f in existing)
+            if found:
+                log.info(f"  既にダウンロード済み: {pt}  → スキップ")
+            else:
+                remaining.add(pt)
+
+    return (len(remaining) == 0, remaining)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1604,8 +1649,12 @@ def download_billing_pdf(
     status_label = "（解約済）" if is_cancelled else ""
     log.info(f"=== {phone_number}{status_label} の処理を開始 (PDFの種類: {', '.join(sorted(pdf_types))}) ===")
 
-    if check_already_downloaded(ctx, save_dir, year, month, phone_number):
+    all_done, remaining_types = check_already_downloaded(ctx, save_dir, year, month, phone_number, pdf_types)
+    if all_done:
         return "skipped"
+    if remaining_types != pdf_types:
+        log.info(f"  未ダウンロード: {', '.join(sorted(remaining_types))}")
+    pdf_types = remaining_types
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=ctx.headless)
