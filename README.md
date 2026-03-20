@@ -20,8 +20,8 @@ My SoftBank / My Y!mobile / My au / My UQ mobile にPlaywrightで自動ログイ
 
 | キャリア | PDFの種類 | 認証方式 |
 |---|---|---|
-| SoftBank | 電話番号別 / 一括 / 機種別 | SoftBank ID + SMS認証 |
-| Y!mobile | 電話番号別のみ | SoftBank ID + SMS認証 |
+| SoftBank | 電話番号別 / 一括 / 機種別 | SoftBank ID（優先）または電話番号 + SMS認証 |
+| Y!mobile | 電話番号別のみ | SoftBank ID（優先）または電話番号 + SMS認証 |
 | au | 請求書 / 領収書 / 支払証明書 | au ID + 2段階認証 |
 | UQ mobile | 請求書 / 領収書 / 支払証明書 | au ID + 2段階認証 |
 
@@ -106,19 +106,21 @@ playwright install chromium
 
 メニュー「携帯領収書管理 ツール」→「ダウンロード対象の電話番号を管理」でHTMLサイドバーを開くと、回線管理スプレッドシートの月別シートから電話番号を動的に読み込み、ダウンロード対象をチェックボックスで選択できる。
 
-| 電話番号 | キャリア | PDFの種類 | 運用端末 | 状態 | au ID |
+| 電話番号 | キャリア | PDFの種類 | 運用端末 | 状態 | ログインID |
 |---|---|---|---|---|---|
-| 09012345678 | SoftBank | 電話番号別 | iPhoneAir | 契約中 | |
+| 09012345678 | SoftBank | 電話番号別 | iPhoneAir | 契約中 | sb_user01 |
 | 08012345678 | Ymobile | 電話番号別 | iPhone16 | 契約中 | |
 | 07012345678 | au | 請求書 | GalaxyS25 | 契約中 | user@example.com |
 | 06012345678 | UQmobile | 請求書 | AQUOSwish | 契約中 | user@example.com |
-| 090XXXXXXXX | SoftBank | | | 解約済 | |
+| 090XXXXXXXX | SoftBank | 電話番号別 | | 解約済 | sb_user02 |
 
 - パスワードは設定シートで一元管理（認証情報シートにはパスワード列なし）
 - `キャリア` 列で SoftBank / Ymobile / au / UQmobile を自動フィルタリング
 - SoftBankは `電話番号別` / `一括` / `機種別` をカンマ区切りで複数指定可
 - au/UQは `請求書` / `領収書` / `支払証明書` をカンマ区切りで複数指定可
-- au/UQ回線はau IDでログイン（回線管理スプレッドシートの「ID」列から自動設定）
+- ログインID: SoftBank/Ymobile → SoftBank ID、au/UQ → au ID（回線管理スプレッドシートの「ID」列から自動設定）
+- SoftBank/Ymobileは解約後SoftBank IDが必須（電話番号でログイン不可）。未設定時はエラー
+- 解約済回線もサイドバーで選択すればダウンロード対象になる
 - 運用端末・状態はサイドバー保存時に回線管理スプレッドシートから自動設定
 
 #### GASメニュー構成

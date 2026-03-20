@@ -683,11 +683,9 @@ def load_accounts(ctx: BillingContext) -> pd.DataFrame:
     if "PDFの種類" not in df.columns:
         df["PDFの種類"] = "電話番号別"
     if "状態" in df.columns:
-        before = len(df)
-        df = df[df["状態"].astype(str).str.strip() != "解約済"].reset_index(drop=True)
-        cancelled = before - len(df)
-        if cancelled > 0:
-            log.info(f"  解約済 {cancelled} 件を除外")
+        cancelled_count = (df["状態"].astype(str).str.strip() == "解約済").sum()
+        if cancelled_count > 0:
+            log.info(f"  うち解約済 {cancelled_count} 件を含む")
     log.info(f"  {len(df)} 件の回線を読み込みました")
 
     ctx.phone_device_map = {}
@@ -700,13 +698,13 @@ def load_accounts(ctx: BillingContext) -> pd.DataFrame:
             device = str(row.get("運用端末", "")).strip()
             if device:
                 ctx.phone_device_map[phone] = device
-            login_id = str(row.get("au ID", "")).strip()
+            login_id = str(row.get("ログインID", "") or row.get("au ID", "")).strip()
             if login_id:
                 ctx.phone_login_id_map[phone] = login_id
         if ctx.phone_device_map:
             log.info(f"  運用端末マップ: {len(ctx.phone_device_map)} 件")
         if ctx.phone_login_id_map:
-            log.info(f"  au IDマップ: {len(ctx.phone_login_id_map)} 件")
+            log.info(f"  ログインIDマップ: {len(ctx.phone_login_id_map)} 件")
 
     return df
 
@@ -1204,7 +1202,8 @@ def _navigate_to_pdf_page(ctx: BillingContext, page) -> None:
 #  ログイン・ナビゲーション
 # ══════════════════════════════════════════════════════════
 
-def do_login_and_navigate(ctx: BillingContext, page, phone_number: str, password: str) -> bool:
+def do_login_and_navigate(ctx: BillingContext, page, phone_number: str, password: str,
+                          is_cancelled: bool = False) -> bool:
     """ログイン → 2FA → PDFダウンロードページまで一気に遷移する。"""
     if ctx.config.carrier_family == "au":
         return _do_au_login_and_navigate(ctx, page, phone_number, password)
@@ -1233,7 +1232,18 @@ def do_login_and_navigate(ctx: BillingContext, page, phone_number: str, password
         if not _handle_security_code_flow(ctx, page, phone_number, password):
             return False
     else:
-        log.info("ログイン情報を入力中...")
+        # SoftBank ID対応: ログインIDがあればそちらを使用
+        login_id = ctx.phone_login_id_map.get(phone_number)
+        if is_cancelled and not login_id:
+            log.error(
+                f"  解約済回線 {phone_number} にSoftBank IDが設定されていません。\n"
+                f"  解約後は電話番号でログインできないため、回線管理スプレッドシートの「ID」列に"
+                f"SoftBank IDを入力してください。"
+            )
+            return False
+        login_value = login_id if login_id else phone_number
+        login_label = f"SoftBank ID: {login_id[:4]}***" if login_id else f"電話番号: {phone_number}"
+        log.info(f"ログイン情報を入力中...（{login_label}）")
         phone_input = (
             page.locator('input[name="telnum"]')
             .or_(page.locator('input.sbid-msn-check'))
@@ -1244,8 +1254,8 @@ def do_login_and_navigate(ctx: BillingContext, page, phone_number: str, password
 
         try:
             phone_input.first.wait_for(state="visible", timeout=10000)
-            phone_input.first.fill(phone_number)
-            log.info("  電話番号を入力しました")
+            phone_input.first.fill(login_value)
+            log.info(f"  {'SoftBank ID' if login_id else '電話番号'}を入力しました")
 
             pw_input = page.locator('input[type="password"]')
             pw_input.first.wait_for(state="visible", timeout=10000)
@@ -1531,11 +1541,13 @@ def download_billing_pdf(
     month: str,
     save_dir: Path,
     pdf_types: set[str] | None = None,
+    is_cancelled: bool = False,
 ) -> str:
     """1回線分のPDFダウンロード処理。"success"/"skipped"/"failed" を返す。"""
     if pdf_types is None:
         pdf_types = {"電話番号別"}
-    log.info(f"=== {phone_number} の処理を開始 (PDFの種類: {', '.join(sorted(pdf_types))}) ===")
+    status_label = "（解約済）" if is_cancelled else ""
+    log.info(f"=== {phone_number}{status_label} の処理を開始 (PDFの種類: {', '.join(sorted(pdf_types))}) ===")
 
     if check_already_downloaded(ctx, save_dir, year, month, phone_number):
         return "skipped"
@@ -1560,7 +1572,7 @@ def download_billing_pdf(
 
         success = False
         try:
-            if not do_login_and_navigate(ctx, page, phone_number, password):
+            if not do_login_and_navigate(ctx, page, phone_number, password, is_cancelled):
                 if session_loaded:
                     log.info("  セッションが無効の可能性 → セッションを削除して再試行")
                     session_f.unlink(missing_ok=True)
@@ -1569,7 +1581,7 @@ def download_billing_pdf(
                     context = browser.new_context(**clean_kwargs)
                     page = context.new_page()
                     page.set_default_timeout(30000)
-                    if not do_login_and_navigate(ctx, page, phone_number, password):
+                    if not do_login_and_navigate(ctx, page, phone_number, password, is_cancelled):
                         _save_debug_screenshot(
                             ctx, page, save_dir, phone_number, year, month,
                             "ログインまたはページ遷移失敗",
@@ -1717,8 +1729,9 @@ def run_main(ctx: BillingContext) -> None:
         phone = str(row["電話番号"]).strip()
         pw = str(row["パスワード"]).strip()
         pdf_types = parse_pdf_types(row.get("PDFの種類", ""), ctx.config.carrier_family)
+        is_cancelled = str(row.get("状態", "")).strip() == "解約済"
 
-        result = download_billing_pdf(ctx, phone, pw, year, month, save_dir, pdf_types)
+        result = download_billing_pdf(ctx, phone, pw, year, month, save_dir, pdf_types, is_cancelled)
         results.append((phone, result))
         if result == "success":
             # ファイル名を構築して記録（Drive APIモードではファイルが既に削除済みのため）

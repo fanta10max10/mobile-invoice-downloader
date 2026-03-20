@@ -123,12 +123,13 @@ function setupSettingsSheet_(ss) {
 
 
 /**
- * 認証情報シート: 電話番号 | キャリア | PDFの種類 | 運用端末 | 状態 | au ID
+ * 認証情報シート: 電話番号 | キャリア | PDFの種類 | 運用端末 | 状態 | ログインID
  * - サイドバーから選択した電話番号が書き込まれる
  * - パスワードは設定シートで一元管理（認証情報シートにはパスワード列を持たない）
  * - 運用端末はサイドバー保存時に回線管理スプレッドシートから自動設定
  * - 状態列: 有効回線は「契約中」、解約済回線は「解約済」と表示
- * - au ID列: au/UQ回線のログインIDを回線管理スプレッドシートの「ID」列から自動設定
+ * - ログインID列: 回線管理スプレッドシートの「ID」列から自動設定
+ *   SoftBank/Ymobile → SoftBank ID、au/UQ → au ID
  */
 function setupAuthSheet_(ss) {
   let sheet = ss.getSheetByName(AUTH_SHEET_NAME);
@@ -139,7 +140,7 @@ function setupAuthSheet_(ss) {
   }
 
   // ヘッダーを正しい6列に設定（旧形式からの移行対応）
-  const correctHeaders = ["電話番号", "キャリア", "PDFの種類", "運用端末", "状態", "au ID"];
+  const correctHeaders = ["電話番号", "キャリア", "PDFの種類", "運用端末", "状態", "ログインID"];
   const currentHeaders = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0]
     .map(h => String(h || "").trim());
 
@@ -149,10 +150,10 @@ function setupAuthSheet_(ss) {
     sheet.deleteColumn(pwIdx + 1);
   }
 
-  // ヘッダーが正しくなければ上書き
+  // ヘッダーが正しくなければ上書き（旧 "au ID" からの自動マイグレーション含む）
   const h0 = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0]
     .map(v => String(v || "").trim());
-  if (h0.length < 6 || h0[0] !== "電話番号" || h0[1] !== "キャリア" || h0[3] !== "運用端末" || h0[4] !== "状態" || h0[5] !== "au ID") {
+  if (h0.length < 6 || h0[0] !== "電話番号" || h0[1] !== "キャリア" || h0[3] !== "運用端末" || h0[4] !== "状態" || h0[5] !== "ログインID") {
     sheet.getRange(1, 1, 1, 6).setValues([correctHeaders])
       .setFontWeight("bold").setBackground("#4285F4").setFontColor("#FFFFFF").setHorizontalAlignment("center");
   }
@@ -313,12 +314,12 @@ function _getPhoneManagerHtml_() {
       .withSuccessHandler(function(r) {
         phoneData = r.phones;
         var savedSelections = r.selections;
-        // 契約中番号を全選択した上で、既存の選択があればPDFの種類を復元
+        // 全番号を初期選択（既存の選択があればPDFの種類を復元）
         selections = { SoftBank: {}, Ymobile: {}, au: {}, UQmobile: {} };
         ["SoftBank", "Ymobile", "au", "UQmobile"].forEach(function(c) {
-          var active = (phoneData[c] || []).filter(function(p) { return !p.cancelled; });
+          var phones = phoneData[c] || [];
           var saved = savedSelections[c] || {};
-          active.forEach(function(p) {
+          phones.forEach(function(p) {
             var defaultPdfType = (c === "au" || c === "UQmobile") ? "請求書" : "電話番号別";
             selections[c][p.phone] = { pdfType: (saved[p.phone] && saved[p.phone].pdfType) || defaultPdfType };
           });
@@ -348,22 +349,17 @@ function _getPhoneManagerHtml_() {
       updateSummary(); return;
     }
 
-    // 契約中の番号のみ表示（解約済はシート側でグレー表示）
-    var active = phones.filter(function(p) { return !p.cancelled; });
-    if (active.length === 0) {
-      list.innerHTML = '<div class="empty-msg">' + currentCarrier + ' の契約中番号がありません。</div>';
-      updateSummary(); return;
-    }
-
     var html = "";
-    active.forEach(function(p) {
+    phones.forEach(function(p) {
       var checked = sel[p.phone] ? "checked" : "";
       var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書" : "電話番号別";
       var pdfType = (sel[p.phone] && sel[p.phone].pdfType) || defaultPdfType;
       var label = p.device ? p.phone + " (" + p.device + ")" : p.phone;
+      if (p.cancelled) label += "（解約済）";
+      var itemClass = p.cancelled ? "phone-item cancelled" : "phone-item";
       var pdfTypes = getPdfTypesForCarrier(currentCarrier);
 
-      html += '<div class="phone-item">'
+      html += '<div class="' + itemClass + '">'
         + '<input type="checkbox" data-phone="' + p.phone + '" ' + checked
         + ' onchange="onCheck(this)">'
         + '<span class="phone-number">' + label + '</span>'
@@ -398,15 +394,15 @@ function _getPhoneManagerHtml_() {
   function toggleAll() {
     var phones = phoneData[currentCarrier] || [];
     var sel = selections[currentCarrier] || {};
-    var active = phones.filter(function(p) { return !p.cancelled; });
-    var allChecked = active.every(function(p) { return sel[p.phone]; });
+    var allChecked = phones.every(function(p) { return sel[p.phone]; });
     if (!selections[currentCarrier]) selections[currentCarrier] = {};
     if (allChecked) {
-      active.forEach(function(p) { delete selections[currentCarrier][p.phone]; });
+      phones.forEach(function(p) { delete selections[currentCarrier][p.phone]; });
     } else {
-      active.forEach(function(p) {
+      var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書" : "電話番号別";
+      phones.forEach(function(p) {
         if (!selections[currentCarrier][p.phone])
-          selections[currentCarrier][p.phone] = { pdfType: "電話番号別" };
+          selections[currentCarrier][p.phone] = { pdfType: defaultPdfType };
       });
     }
     render();
@@ -415,7 +411,9 @@ function _getPhoneManagerHtml_() {
   function updateSummary() {
     document.getElementById("summary").textContent =
       "選択中: SoftBank " + Object.keys(selections["SoftBank"] || {}).length +
-      "件 / Ymobile " + Object.keys(selections["Ymobile"] || {}).length + "件";
+      " / Ymobile " + Object.keys(selections["Ymobile"] || {}).length +
+      " / au " + Object.keys(selections["au"] || {}).length +
+      " / UQ " + Object.keys(selections["UQmobile"] || {}).length;
   }
 
   function reload() {
@@ -460,7 +458,7 @@ function getPhoneManagerData() {
 /**
  * サイドバーからの保存。
  * 認証情報シートとリンクシートの両方を更新する。
- * 解約済の番号は自動的に除外される。
+ * 解約済でも選択されていればPDFの種類付きで認証情報シートに書き込む。
  */
 function savePhoneSelections(selections) {
   try {
@@ -498,30 +496,38 @@ function savePhoneSelections(selections) {
         .setFontLine("none").setFontColor(null).setBackground(null).setFontWeight("normal");
     }
 
-    // 選択中の番号（解約済除外）
+    // 選択中の番号（契約中・解約済を分離）
     const activeRows = [];
-    const cancelledRows = [];
+    const cancelledSelectedRows = [];
+    const cancelledUnselectedRows = [];
     const linkData = { SoftBank: [], Ymobile: [], au: [], UQmobile: [] };
+    const selectedPhones = new Set();
 
     for (const carrier of ALL_CARRIERS) {
       const sel = selections[carrier] || {};
       for (const phone of Object.keys(sel)) {
-        if (cancelledSet.has(phone)) continue;
+        selectedPhones.add(phone);
         const defaultPdfType = (carrier === "au" || carrier === "UQmobile") ? "請求書" : "電話番号別";
         const pdfType = sel[phone].pdfType || defaultPdfType;
-        activeRows.push([phone, carrier, pdfType, deviceMap[phone] || "", "契約中", loginIdMap[phone] || ""]);
+        const status = cancelledSet.has(phone) ? "解約済" : "契約中";
+        if (status === "解約済") {
+          cancelledSelectedRows.push([phone, carrier, pdfType, deviceMap[phone] || "", "解約済", loginIdMap[phone] || ""]);
+        } else {
+          activeRows.push([phone, carrier, pdfType, deviceMap[phone] || "", "契約中", loginIdMap[phone] || ""]);
+        }
         linkData[carrier].push({ phone, name: nameMap[phone] || "" });
       }
     }
 
-    // 解約済回線を末尾に追加
+    // 選択されていない解約済回線を末尾に追加（PDFの種類なし）
     for (const carrier of ALL_CARRIERS) {
       for (const p of (allPhones[carrier] || [])) {
-        if (p.cancelled) {
-          cancelledRows.push([p.phone, carrier, "", p.device || "", "解約済", loginIdMap[p.phone] || ""]);
+        if (p.cancelled && !selectedPhones.has(p.phone)) {
+          cancelledUnselectedRows.push([p.phone, carrier, "", p.device || "", "解約済", loginIdMap[p.phone] || ""]);
         }
       }
     }
+    const cancelledRows = [...cancelledSelectedRows, ...cancelledUnselectedRows];
 
     const allRows = [...activeRows, ...cancelledRows];
     if (allRows.length > 0) {
@@ -545,8 +551,10 @@ function savePhoneSelections(selections) {
     _syncLinkSheetPhones_(ss, AU_LINK_SHEET_NAME, linkData.au, cancelledSet);
     _syncLinkSheetPhones_(ss, UQMOBILE_LINK_SHEET_NAME, linkData.UQmobile, cancelledSet);
 
-    let msg = `保存しました（有効${activeRows.length}件）。`;
-    if (cancelledRows.length > 0) msg += `\n解約済${cancelledRows.length}件をグレー表示で記録。`;
+    let msg = `保存しました（契約中${activeRows.length}件`;
+    if (cancelledSelectedRows.length > 0) msg += `、解約済（選択）${cancelledSelectedRows.length}件`;
+    if (cancelledUnselectedRows.length > 0) msg += `、解約済（未選択）${cancelledUnselectedRows.length}件`;
+    msg += `）。`;
     return msg;
   } catch (e) {
     Logger.log(`[savePhoneSelections] エラー: ${e.message}\n${e.stack}`);
