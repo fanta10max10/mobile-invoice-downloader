@@ -348,10 +348,9 @@ class DriveContext:
 
     def file_exists(self, folder_id: str, year: str, month: str, phone: str) -> bool:
         """指定フォルダ内に対象ファイルが既に存在するか確認する"""
-        # 電話番号でマッチ（会社名の有無に関わらず旧・新形式両対応）
-        phone_part = f"{self.carrier_name}_{phone}_"
+        # 電話番号でマッチ（旧・新形式両対応）
         q = (
-            f"name contains '{phone_part}' and name contains '{year}{month}' "
+            f"name contains '_{phone}_' and name contains '{year}{month}' "
             f"and '{folder_id}' in parents and mimeType='application/pdf' and trashed=false"
         )
         res = self.service.files().list(q=q, fields="files(name)").execute()
@@ -864,7 +863,7 @@ def sanitize_amount(text: str) -> str:
 
 def build_filename(ctx: BillingContext, year: str, month: str, phone: str, amount: str = "") -> str:
     """電子帳簿保存法準拠のファイル名を生成する"""
-    base = f"{year}{month}_{ctx.config.company_name}_{ctx.config.carrier_name}_{phone}"
+    base = f"{year}{month}_{ctx.config.company_name}_{phone}"
     if amount:
         base += f"_{amount}"
     else:
@@ -958,8 +957,8 @@ def check_already_downloaded(ctx: BillingContext, save_dir: Path, year: str, mon
                      "電話番号別": "", "一括": "_一括", "機種別": "_機種別"}
 
     remaining = set()
-    # 電話番号でマッチ（会社名の有無に関わらず旧・新形式両対応）
-    phone_part = f"{ctx.config.carrier_name}_{phone}_"
+    # 電話番号でマッチ（旧・新形式両対応）
+    phone_part = f"_{phone}_"
     ym_prefix = f"{year}{month}"
 
     for pt in pdf_types:
@@ -969,8 +968,8 @@ def check_already_downloaded(ctx: BillingContext, save_dir: Path, year: str, mon
             # サフィックス付きで検索（会社名有無に関わらずマッチ）
             if suffix:
                 q = (f"name contains '{phone_part}' and name contains '{ym_prefix}' "
-                     f"and name contains '{suffix}.pdf' "
-                     f"and '{folder_id}' in parents and mimeType='application/pdf' and trashed=false")
+                     f"and name contains '{suffix}.pdf' and '{folder_id}' in parents "
+                     f"and mimeType='application/pdf' and trashed=false")
             else:
                 q = (f"name contains '{phone_part}' and name contains '{ym_prefix}' "
                      f"and '{folder_id}' in parents and mimeType='application/pdf' and trashed=false")
@@ -988,9 +987,9 @@ def check_already_downloaded(ctx: BillingContext, save_dir: Path, year: str, mon
                 remaining.add(pt)
         else:
             if suffix:
-                pattern = f"{ym_prefix}*{phone_part}*{suffix}.pdf"
+                pattern = f"{ym_prefix}_*{phone_part}*{suffix}.pdf"
             else:
-                pattern = f"{ym_prefix}*{phone_part}*.pdf"
+                pattern = f"{ym_prefix}_*{phone_part}*.pdf"
             existing = list(save_dir.glob(pattern))
             if suffix:
                 found = len(existing) > 0

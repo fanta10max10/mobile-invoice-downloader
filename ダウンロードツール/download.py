@@ -148,7 +148,7 @@ def update_amounts():
                     if any(name.endswith(s) for s in exclude_suffixes):
                         continue
                     if name.endswith(".pdf"):
-                        targets.append(pdf)
+                        targets.append((pdf, cf["name"]))
 
     log.info(f"対象PDF: {len(targets)}件")
     if not targets:
@@ -163,18 +163,15 @@ def update_amounts():
     updated = 0
     skipped = 0
     failed = 0
-    for f in targets:
+    for f, carrier_folder in targets:
         name = f["name"]
-        # ファイル名パース: 新形式 YYYYMM_会社名_carrier_phone_*.pdf
-        m = re.match(r"(\d{6})_.+?_(SoftBank|Ymobile|au|UQmobile)_(\d+)_.+\.pdf", name)
-        if not m:
-            # 旧形式 YYYYMM_carrier_phone_*.pdf
-            m = re.match(r"(\d{6})_(SoftBank|Ymobile|au|UQmobile)_(\d+)_.+\.pdf", name)
+        # ファイル名パース: YYYYMM_*_phone_*.pdf から電話番号を抽出
+        m = re.match(r"(\d{6})_.+?_(\d{10,})_.+\.pdf", name)
         if not m:
             continue
-        ym, carrier, phone = m.group(1), m.group(2), m.group(3)
-        is_au = carrier in ("au", "UQmobile")
-        company = company_map.get(carrier, "")
+        ym, phone = m.group(1), m.group(2)
+        is_au = carrier_folder in ("au", "UQmobile")
+        company = company_map.get(carrier_folder, "")
 
         content = service.files().get_media(fileId=f["id"]).execute()
         tmp = Path(tempfile.mktemp(suffix=".pdf"))
@@ -183,7 +180,7 @@ def update_amounts():
         tmp.unlink()
 
         if amount:
-            new_name = f"{ym}_{company}_{carrier}_{phone}_{amount}.pdf"
+            new_name = f"{ym}_{company}_{phone}_{amount}.pdf"
             if new_name == name:
                 skipped += 1
                 continue
