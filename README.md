@@ -11,7 +11,7 @@ My SoftBank / My Y!mobile / My au / My UQ mobile にPlaywrightで自動ログイ
 - 複数回線の一括処理
 - SMS認証（セッション再利用でスキップ可能）
 - Google Drive APIによるPDF直接アップロード（OAuth2優先、サービスアカウントフォールバック）
-- 認証情報管理シートによる解約済回線の自動スキップ
+- 解約済回線のダウンロード対応（グレーアウト表示、SoftBank ID / au IDでログイン）
 - 電子帳簿保存法準拠のファイル命名
 
 ---
