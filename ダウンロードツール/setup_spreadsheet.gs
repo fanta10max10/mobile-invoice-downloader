@@ -491,14 +491,15 @@ function savePhoneSelections(selections) {
     }
 
     // 既存データを全クリア（ヘッダー行以外）
-    const lastRow = authSheet.getLastRow();
+    const lastRow = Math.max(authSheet.getLastRow(), 1);
     const lastCol = Math.max(authSheet.getLastColumn(), 6);
     if (lastRow > 1) {
       const rows = lastRow - 1;
       authSheet.getRange(2, 1, rows, lastCol).clearContent();
-      // フォント・色・背景のみリセット（ドロップダウンは保持）
+      authSheet.getRange(2, 1, rows, lastCol).clearFormat();
       authSheet.getRange(2, 1, rows, lastCol)
         .setFontLine("none").setFontColor(null).setBackground(null).setFontWeight("normal");
+      SpreadsheetApp.flush();
     }
 
     // 選択中の番号（契約中・解約済を分離）
@@ -537,6 +538,13 @@ function savePhoneSelections(selections) {
     const allRows = [...activeRows, ...cancelledRows];
     if (allRows.length > 0) {
       authSheet.getRange(2, 1, allRows.length, 6).setValues(allRows);
+    }
+    // 新データより下に残ったゴミ行を確実にクリア
+    const newLastRow = allRows.length + 1;
+    const sheetLastRow = authSheet.getLastRow();
+    if (sheetLastRow > newLastRow) {
+      authSheet.getRange(newLastRow + 1, 1, sheetLastRow - newLastRow, lastCol).clearContent();
+      authSheet.getRange(newLastRow + 1, 1, sheetLastRow - newLastRow, lastCol).clearFormat();
     }
     authSheet.getRange("A:A").setNumberFormat("@");
 
