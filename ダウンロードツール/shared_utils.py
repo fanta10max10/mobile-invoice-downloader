@@ -59,6 +59,7 @@ class CarrierConfig:
     code_file_prefix: str       # "softbank", "ymobile", "au", "uqmobile"
     session_file_prefix: str
     temp_dir_prefix: str        # "softbank_pdf_", "ymobile_pdf_", "au_pdf_", "uqmobile_pdf_"
+    company_name: str = "ソフトバンク株式会社"  # 電子帳簿保存法の取引先名
     carrier_family: str = "softbank"  # "softbank" or "au" — ログイン・PDF取得フローの分岐に使用
     # SoftBank/Ymobile 固有（WCOシステム）
     wco_base: str = ""
@@ -347,10 +348,11 @@ class DriveContext:
 
     def file_exists(self, folder_id: str, year: str, month: str, phone: str) -> bool:
         """指定フォルダ内に対象ファイルが既に存在するか確認する"""
-        prefix = f"{year}{month}_{self.carrier_name}_{phone}_"
+        # 電話番号でマッチ（会社名の有無に関わらず旧・新形式両対応）
+        phone_part = f"{self.carrier_name}_{phone}_"
         q = (
-            f"name contains '{prefix}' and '{folder_id}' in parents "
-            f"and mimeType='application/pdf' and trashed=false"
+            f"name contains '{phone_part}' and name contains '{year}{month}' "
+            f"and '{folder_id}' in parents and mimeType='application/pdf' and trashed=false"
         )
         res = self.service.files().list(q=q, fields="files(name)").execute()
         files = res.get("files", [])
@@ -811,22 +813,7 @@ def extract_amount_from_pdf(pdf_path: Path, phone: str = "") -> str:
             digits = re.sub(r'\D', '', phone)
             formatted = f"{digits[:3]}-{digits[3:7]}-{digits[7:]}" if len(digits) >= 10 else phone
 
-            # 方式1: 「(内訳)」セクション（税込金額）— 5回線以上のまとめ請求PDF
-            breakdown_match = re.search(r'\(内訳\)([\s\S]{0,500}?)(?:au|※|ご利用)', text)
-            if breakdown_match:
-                phone_section = breakdown_match.group(1)
-                phone_list = re.findall(r'\d{3}-\d{4}-\d{4}', phone_section)
-                if formatted in phone_list:
-                    phone_idx = phone_list.index(formatted)
-                    before_breakdown = text[:breakdown_match.start()]
-                    amounts = re.findall(r'\(\s*([\d,]+)円?\s*\)', before_breakdown)
-                    if phone_idx < len(amounts):
-                        a = amounts[phone_idx].replace(',', '')
-                        if a.isdigit() and 0 < int(a) <= 9999999:
-                            log.info(f"  PDF金額取得（内訳対応）: {a}円(税抜) (電話番号{phone_idx+1}/{len(phone_list)})")
-                            return f"{int(a)}円(税抜)"
-
-            # 方式2: 電話番号セクション内の「10%消費税の課税対象額」をそのまま使用
+            # 方式1: 電話番号セクション内の「10%消費税の課税対象額」（税抜）
             idx = text.find(formatted)
             if idx >= 0:
                 after = text[idx:]
@@ -877,7 +864,7 @@ def sanitize_amount(text: str) -> str:
 
 def build_filename(ctx: BillingContext, year: str, month: str, phone: str, amount: str = "") -> str:
     """電子帳簿保存法準拠のファイル名を生成する"""
-    base = f"{year}{month}_{ctx.config.carrier_name}_{phone}"
+    base = f"{year}{month}_{ctx.config.company_name}_{ctx.config.carrier_name}_{phone}"
     if amount:
         base += f"_{amount}"
     else:
@@ -971,20 +958,22 @@ def check_already_downloaded(ctx: BillingContext, save_dir: Path, year: str, mon
                      "電話番号別": "", "一括": "_一括", "機種別": "_機種別"}
 
     remaining = set()
-    prefix = f"{year}{month}_{ctx.config.carrier_name}_{phone}_"
+    # 電話番号でマッチ（会社名の有無に関わらず旧・新形式両対応）
+    phone_part = f"{ctx.config.carrier_name}_{phone}_"
+    ym_prefix = f"{year}{month}"
 
     for pt in pdf_types:
         suffix = type_suffixes.get(pt, "")
         if ctx.drive_ctx is not None:
             folder_id = ctx.drive_ctx.get_folder_id(year, month)
-            # サフィックス付きで検索
+            # サフィックス付きで検索（会社名有無に関わらずマッチ）
             if suffix:
-                q = (f"name contains '{prefix}' and name contains '{suffix}.pdf' "
+                q = (f"name contains '{phone_part}' and name contains '{ym_prefix}' "
+                     f"and name contains '{suffix}.pdf' "
                      f"and '{folder_id}' in parents and mimeType='application/pdf' and trashed=false")
             else:
-                # 基本ファイル（サフィックスなし）: _領収書/_支払証明書/_一括/_機種別 を除外
-                q = (f"name contains '{prefix}' and '{folder_id}' in parents "
-                     f"and mimeType='application/pdf' and trashed=false")
+                q = (f"name contains '{phone_part}' and name contains '{ym_prefix}' "
+                     f"and '{folder_id}' in parents and mimeType='application/pdf' and trashed=false")
                 # 除外サフィックスを持つファイルは基本ファイルではない
             res = ctx.drive_ctx.service.files().list(q=q, fields="files(name)").execute()
             files = res.get("files", [])
@@ -999,9 +988,9 @@ def check_already_downloaded(ctx: BillingContext, save_dir: Path, year: str, mon
                 remaining.add(pt)
         else:
             if suffix:
-                pattern = f"{prefix}*{suffix}.pdf"
+                pattern = f"{ym_prefix}*{phone_part}*{suffix}.pdf"
             else:
-                pattern = f"{prefix}*.pdf"
+                pattern = f"{ym_prefix}*{phone_part}*.pdf"
             existing = list(save_dir.glob(pattern))
             if suffix:
                 found = len(existing) > 0

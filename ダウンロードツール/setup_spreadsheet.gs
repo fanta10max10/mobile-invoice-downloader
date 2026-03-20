@@ -1030,7 +1030,8 @@ function _collectCarrierPdfs_(folder, carrier, results) {
   while (files.hasNext()) {
     const file = files.next();
     if (file.getMimeType() !== "application/pdf") continue;
-    const m = file.getName().match(new RegExp(`^(\\d{4})(\\d{2})_${carrier}_(\\d+)`));
+    // 新形式: YYYYMM_会社名_carrier_phone_... / 旧形式: YYYYMM_carrier_phone_...
+    const m = file.getName().match(new RegExp(`^(\\d{4})(\\d{2})_(?:.*_)?${carrier}_(\\d+)`));
     if (m) results.push({ year: m[1], month: m[2], phone: m[3], file });
   }
 }

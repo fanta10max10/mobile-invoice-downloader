@@ -53,6 +53,7 @@ AU_CONFIG = CarrierConfig(
     display_name="My au",
     auth_domain="connect.auone.jp",
     login_url="https://id.auone.jp/index.html",
+    company_name="KDDI株式会社",
     carrier_family="au",
     au_billing_top_url="https://my.au.com/aus/hc-cs/lic/LIC0020001.hc",
     au_pin_setting_name="au暗証番号",
@@ -67,6 +68,7 @@ UQ_CONFIG = CarrierConfig(
     display_name="My UQ mobile",
     auth_domain="connect.auone.jp",
     login_url="https://id.auone.jp/index.html",
+    company_name="KDDI株式会社",
     carrier_family="au",
     au_billing_top_url="https://my.au.com/aus/hc-cs/lic/LIC0020001.hc",
     au_pin_setting_name="au暗証番号",
@@ -153,17 +155,26 @@ def update_amounts():
         log.info("金額未取得のPDFはありません。")
         return
 
+    # キャリア名→会社名マップ
+    company_map = {}
+    for config in ALL_CARRIERS:
+        company_map[config.carrier_name] = config.company_name
+
     updated = 0
     skipped = 0
     failed = 0
     for f in targets:
         name = f["name"]
-        # ファイル名パース: YYYYMM_carrier_phone_*.pdf
-        m = re.match(r"(\d{6})_(\w+)_(\d+)_.+\.pdf", name)
+        # ファイル名パース: 新形式 YYYYMM_会社名_carrier_phone_*.pdf
+        m = re.match(r"(\d{6})_.+?_(SoftBank|Ymobile|au|UQmobile)_(\d+)_.+\.pdf", name)
+        if not m:
+            # 旧形式 YYYYMM_carrier_phone_*.pdf
+            m = re.match(r"(\d{6})_(SoftBank|Ymobile|au|UQmobile)_(\d+)_.+\.pdf", name)
         if not m:
             continue
         ym, carrier, phone = m.group(1), m.group(2), m.group(3)
         is_au = carrier in ("au", "UQmobile")
+        company = company_map.get(carrier, "")
 
         content = service.files().get_media(fileId=f["id"]).execute()
         tmp = Path(tempfile.mktemp(suffix=".pdf"))
@@ -172,7 +183,7 @@ def update_amounts():
         tmp.unlink()
 
         if amount:
-            new_name = f"{ym}_{carrier}_{phone}_{amount}.pdf"
+            new_name = f"{ym}_{company}_{carrier}_{phone}_{amount}.pdf"
             if new_name == name:
                 skipped += 1
                 continue
