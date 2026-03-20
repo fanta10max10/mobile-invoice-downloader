@@ -255,6 +255,7 @@ def write_download_history(
     year: str,
     month: str,
     save_dir: "str | Path | None" = None,
+    downloaded_filenames: "dict[str, list[str]] | None" = None,
 ) -> None:
     """ダウンロード結果をスプレッドシートの「ダウンロード履歴」シートに記録する。"""
     try:
@@ -266,25 +267,27 @@ def write_download_history(
             log.debug("ダウンロード履歴シートが見つかりません（スキップ）")
             return
 
-        downloaded_files = {}
-        if save_dir:
-            try:
-                sd = Path(str(save_dir))
-                if sd.exists():
-                    for f in sd.glob("*.pdf"):
-                        m = re.match(rf"^\d{{6}}_{re.escape(carrier_name)}_(\d+)", f.name)
-                        if m:
-                            phone = m.group(1)
-                            if phone not in downloaded_files:
-                                downloaded_files[phone] = []
-                            downloaded_files[phone].append(f.name)
-            except Exception:
-                pass
+        # ファイル名マップが渡されなかった場合、ローカルディレクトリから検索（フォールバック）
+        if downloaded_filenames is None:
+            downloaded_filenames = {}
+            if save_dir:
+                try:
+                    sd = Path(str(save_dir))
+                    if sd.exists():
+                        for f in sd.glob("*.pdf"):
+                            m = re.match(rf"^\d{{6}}_{re.escape(carrier_name)}_(\d+)", f.name)
+                            if m:
+                                phone = m.group(1)
+                                if phone not in downloaded_filenames:
+                                    downloaded_filenames[phone] = []
+                                downloaded_filenames[phone].append(f.name)
+                except Exception:
+                    pass
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         rows = []
         for phone, ok in results:
-            filenames = ", ".join(downloaded_files.get(phone, []))
+            filenames = ", ".join(downloaded_filenames.get(phone, []))
             rows.append([now, carrier_name, phone, f"{year}{month}", filenames, "成功" if ok else "失敗"])
         if rows:
             ws.append_rows(rows, value_input_option="USER_ENTERED")
@@ -1709,6 +1712,7 @@ def run_main(ctx: BillingContext) -> None:
 
     # 各回線についてPDFをダウンロード
     results = []
+    downloaded_filenames = {}  # phone -> [filename, ...]
     for _, row in accounts.iterrows():
         phone = str(row["電話番号"]).strip()
         pw = str(row["パスワード"]).strip()
@@ -1716,6 +1720,10 @@ def run_main(ctx: BillingContext) -> None:
 
         result = download_billing_pdf(ctx, phone, pw, year, month, save_dir, pdf_types)
         results.append((phone, result))
+        if result == "success":
+            # ファイル名を構築して記録（Drive APIモードではファイルが既に削除済みのため）
+            filename = build_filename(ctx, year, month, phone)
+            downloaded_filenames[phone] = [filename]
 
     # 結果サマリー
     status_labels = {"success": "✅ 成功", "skipped": "⏭️ ダウンロード済み", "failed": "❌ 失敗"}
@@ -1733,7 +1741,7 @@ def run_main(ctx: BillingContext) -> None:
     # ダウンロード履歴をスプレッドシートに記録（スキップ分は記録しない）
     history_results = [(p, r == "success") for p, r in results if r != "skipped"]
     if history_results:
-        write_download_history(ctx.spreadsheet_id, ctx.config.carrier_name, history_results, year, month, save_dir)
+        write_download_history(ctx.spreadsheet_id, ctx.config.carrier_name, history_results, year, month, save_dir, downloaded_filenames)
 
     # Drive APIモード: 一時ディレクトリのクリーンアップ
     if ctx.temp_save_dir is not None and ctx.temp_save_dir.exists():

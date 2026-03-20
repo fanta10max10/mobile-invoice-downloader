@@ -172,10 +172,11 @@ function setupAuthSheet_(ss) {
     .requireValueInList(["SoftBank", "Ymobile", "au", "UQmobile"], true)
     .setAllowInvalid(false).build());
 
-  // PDFの種類列にドロップダウンを設定
+  // PDFの種類列にドロップダウンを設定（SB/YM用 + au/UQ用を結合）
+  const allPdfTypes = [...PDF_TYPE_OPTIONS, ...AU_PDF_TYPE_OPTIONS];
   const pdfTypeRange = sheet.getRange(2, 3, lastRow - 1, 1);
   pdfTypeRange.setDataValidation(SpreadsheetApp.newDataValidation()
-    .requireValueInList(PDF_TYPE_OPTIONS, true)
+    .requireValueInList(allPdfTypes, true)
     .setAllowInvalid(true).build());
 }
 
