@@ -598,18 +598,18 @@ function _syncLinkSheetPhones_(ss, sheetName, phoneList, cancelledSet) {
       }
     }
 
-    // 電話番号・名義列（A,B列）のみ解約済スタイルを更新（月列のリンクはそのまま）
+    // 電話番号・名義列（A,B列）の解約済スタイルを追加のみ（解除はしない）
+    // 別の月で解約済だった回線のグレーアウトが消えないようにする
     const refreshedData = sheet.getDataRange().getValues();
     for (let i = 1; i < refreshedData.length; i++) {
       const phone = _normalizePhone_(refreshedData[i][0]);
       if (!phone) continue;
       const row = i + 1;
-      const abRange = sheet.getRange(row, 1, 1, 2);
       if (cancelledSet && cancelledSet.has(phone)) {
+        const abRange = sheet.getRange(row, 1, 1, 2);
         abRange.setFontLine("line-through").setFontColor("#999999");
-      } else {
-        abRange.setFontLine("none").setFontColor(null);
       }
+      // cancelledSetに含まれない回線の既存スタイルはそのまま維持
     }
   } catch (e) {
     Logger.log(`[_syncLinkSheetPhones_] ${sheetName} エラー: ${e.message}`);
