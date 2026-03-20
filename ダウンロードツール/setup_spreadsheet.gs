@@ -507,14 +507,11 @@ function savePhoneSelections(selections) {
     // 選択中の番号（契約中・解約済を分離）
     const activeRows = [];
     const cancelledSelectedRows = [];
-    const cancelledUnselectedRows = [];
     const linkData = { SoftBank: [], Ymobile: [], au: [], UQmobile: [] };
-    const selectedPhones = new Set();
 
     for (const carrier of ALL_CARRIERS) {
       const sel = selections[carrier] || {};
       for (const phone of Object.keys(sel)) {
-        selectedPhones.add(phone);
         const defaultPdfType = (carrier === "au" || carrier === "UQmobile") ? "請求書" : "電話番号別";
         const pdfType = sel[phone].pdfType || defaultPdfType;
         const status = cancelledSet.has(phone) ? "解約済" : "契約中";
@@ -527,15 +524,7 @@ function savePhoneSelections(selections) {
       }
     }
 
-    // 選択されていない解約済回線を末尾に追加（PDFの種類なし）
-    for (const carrier of ALL_CARRIERS) {
-      for (const p of (allPhones[carrier] || [])) {
-        if (p.cancelled && !selectedPhones.has(p.phone)) {
-          cancelledUnselectedRows.push([p.phone, carrier, "", p.device || "", "解約済", loginIdMap[p.phone] || ""]);
-        }
-      }
-    }
-    const cancelledRows = [...cancelledSelectedRows, ...cancelledUnselectedRows];
+    const cancelledRows = [...cancelledSelectedRows];
 
     const allRows = [...activeRows, ...cancelledRows];
     if (allRows.length > 0) {
@@ -566,10 +555,9 @@ function savePhoneSelections(selections) {
     _syncLinkSheetPhones_(ss, AU_LINK_SHEET_NAME, linkData.au, cancelledSet);
     _syncLinkSheetPhones_(ss, UQMOBILE_LINK_SHEET_NAME, linkData.UQmobile, cancelledSet);
 
-    Logger.log(`[save] 書き込み: active=${activeRows.length}, cancelledSel=${cancelledSelectedRows.length}, cancelledUnsel=${cancelledUnselectedRows.length}, total=${allRows.length}`);
+    Logger.log(`[save] 書き込み: active=${activeRows.length}, cancelled=${cancelledSelectedRows.length}, total=${allRows.length}`);
     let msg = `保存しました（契約中${activeRows.length}件`;
-    if (cancelledSelectedRows.length > 0) msg += `、解約済（選択）${cancelledSelectedRows.length}件`;
-    if (cancelledUnselectedRows.length > 0) msg += `、解約済（未選択）${cancelledUnselectedRows.length}件`;
+    if (cancelledSelectedRows.length > 0) msg += `、解約済${cancelledSelectedRows.length}件`;
     msg += `、合計${allRows.length}行）。`;
     return msg;
   } catch (e) {
