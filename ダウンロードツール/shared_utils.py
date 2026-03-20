@@ -1473,11 +1473,28 @@ def do_login_and_navigate(ctx: BillingContext, page, phone_number: str, password
 
     # Step 3b: 通常のセキュリティ番号フロー
     if _is_on_auth_page(ctx, page):
+        # ログインエラー検出（ID/パスワード不正）
+        page_text = _get_page_text(page)
+        sb_error_patterns = [
+            "ログインできません",
+            "IDまたはパスワードが違います",
+            "正しく入力してください",
+            "ログインに失敗",
+            "お客さまの入力した情報が正しくありません",
+        ]
+        for pattern in sb_error_patterns:
+            if pattern in page_text:
+                log.error(f"  SoftBank IDログインエラー: {pattern}")
+                log.error(f"  SoftBank ID またはパスワードが正しいか確認してください。")
+                return False
+
         error_msg = page.locator(".err-area, .error, .alert-error, .sbid-error")
         if error_msg.count() > 0:
             try:
-                err_text = error_msg.first.text_content()
-                log.error(f"  ログインエラー: {err_text}")
+                err_text = error_msg.first.text_content().strip()
+                if err_text and len(err_text) > 5:
+                    log.error(f"  SoftBank IDログインエラー: {err_text[:100]}")
+                    return False
             except Exception:
                 pass
 
@@ -2066,6 +2083,37 @@ def _do_au_login_and_navigate(ctx: BillingContext, page, phone_number: str, pass
     except (PlaywrightTimeout, Exception) as e:
         log.error(f"  au IDログインフォームの操作に失敗: {e}")
         return False
+
+    # Step 2.5: ログインエラー検出（ID/パスワード不正）
+    if _is_on_au_auth_page(ctx, page):
+        page_text = _get_page_text(page)
+        # au IDのエラーメッセージパターン
+        error_patterns = [
+            "ログインできませんでした",
+            "ID またはパスワードが間違っています",
+            "IDまたはパスワードが正しくありません",
+            "入力されたau IDは登録されていません",
+            "パスワードが一致しません",
+            "エラーが発生しました",
+            "ログインに失敗",
+        ]
+        for pattern in error_patterns:
+            if pattern in page_text:
+                log.error(f"  au IDログインエラー: {pattern}")
+                log.error(f"  au ID '{login_id}' またはパスワードが正しいか確認してください。")
+                return False
+
+        # エラーメッセージ要素を直接検出
+        error_el = page.locator(".err-area, .error-message, .caution, [class*='error'], [class*='caution']")
+        if error_el.count() > 0:
+            try:
+                err_text = error_el.first.text_content().strip()
+                if err_text and len(err_text) > 5:
+                    log.error(f"  au IDログインエラー: {err_text[:100]}")
+                    log.error(f"  au ID '{login_id}' またはパスワードが正しいか確認してください。")
+                    return False
+            except Exception:
+                pass
 
     # Step 3: 2段階認証（SMS確認コードまたはワンタイムURL）
     if _is_on_au_auth_page(ctx, page):
