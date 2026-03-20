@@ -1306,6 +1306,35 @@ def do_login_and_navigate(ctx: BillingContext, page, phone_number: str, password
 
     # Step 4: PDFページへの到達確認・ナビゲーション
     if not _is_on_auth_page(ctx, page):
+        # 解約済回線のエラーページ検出: My SoftBankが拒否してもWCOは使える
+        current_url = page.url
+        if "AuthenticationImpossibleCanceledException" in current_url or "error" in current_url:
+            log.info("  解約済回線のエラーを検出 → WCO書面発行ページに直接遷移します")
+            try:
+                page.goto(ctx.config.certificate_url, wait_until="networkidle")
+                time.sleep(3)
+                log.info(f"  WCO遷移後のURL: {page.url}")
+                # WCOで認証が必要な場合
+                if _is_on_auth_page(ctx, page):
+                    if not _handle_security_code_flow(ctx, page, phone_number, password):
+                        return False
+                # PDFページ確認
+                try:
+                    combobox = page.get_by_role("combobox").first
+                    if combobox.is_visible(timeout=5000):
+                        log.info("  PDFダウンロードページに到達しました！（WCO直接遷移）")
+                        return True
+                except Exception:
+                    pass
+                pdf_link = page.locator('a[href*="doPrint"]')
+                if pdf_link.count() > 0:
+                    log.info("  PDFダウンロードページに到達しました！（WCO直接遷移・PDFリンク検出）")
+                    return True
+            except Exception as e:
+                log.error(f"  WCO直接遷移に失敗: {e}")
+            log.error(f"  解約済回線のWCO直接遷移でもPDFページに到達できませんでした")
+            return False
+
         try:
             combobox = page.get_by_role("combobox").first
             if combobox.is_visible(timeout=3000):
