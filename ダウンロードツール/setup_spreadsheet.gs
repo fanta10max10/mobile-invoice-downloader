@@ -283,6 +283,7 @@ function _getPhoneManagerHtml_() {
     <button class="tab-btn" data-carrier="au" onclick="switchTab('au')">au</button>
     <button class="tab-btn" data-carrier="UQmobile" onclick="switchTab('UQmobile')">UQ mobile</button>
   </div>
+  <div id="targetMonth" class="summary" style="font-weight:bold; margin-bottom:4px;"></div>
   <div id="status" class="status"></div>
   <div id="phoneList" class="phone-list"><div class="empty-msg">読み込み中...</div></div>
   <div id="summary" class="summary"></div>
@@ -314,6 +315,7 @@ function _getPhoneManagerHtml_() {
       .withSuccessHandler(function(r) {
         phoneData = r.phones;
         var savedSelections = r.selections;
+        document.getElementById("targetMonth").textContent = "対象月: " + (r.targetMonth || "");
         // 全番号を初期選択（既存の選択があればPDFの種類を復元）
         selections = { SoftBank: {}, Ymobile: {}, au: {}, UQmobile: {} };
         ["SoftBank", "Ymobile", "au", "UQmobile"].forEach(function(c) {
@@ -444,9 +446,11 @@ function _getPhoneManagerHtml_() {
 
 function getPhoneManagerData() {
   try {
+    const target = _getTargetMonth_();
     return {
       phones: _getAllPhonesFromMonthSheets_(),
       selections: _getCurrentSelections_(),
+      targetMonth: target.year + "年" + target.month + "月",
     };
   } catch (e) {
     Logger.log(`[getPhoneManagerData] エラー: ${e.message}\n${e.stack}`);
@@ -624,8 +628,28 @@ function _normalizeCarrierName_(text) {
 }
 
 /**
+ * 設定シートの対象月から対象の月番号を取得する。
+ * 「自動（前月）」または未設定の場合は前月を返す。
+ * 返却値: { year: number, month: number } (例: { year: 2026, month: 1 })
+ */
+function _getTargetMonth_() {
+  const val = String(_getSettingValue_("対象月") || "").trim();
+  // YYYYMM形式
+  const m1 = val.match(/^(\d{4})(\d{2})$/);
+  if (m1) return { year: parseInt(m1[1]), month: parseInt(m1[2]) };
+  // YYYY年MM月形式
+  const m2 = val.match(/^(\d{4})年(\d{1,2})月$/);
+  if (m2) return { year: parseInt(m2[1]), month: parseInt(m2[2]) };
+  // 「自動（前月）」またはその他 → 前月
+  const now = new Date();
+  let y = now.getFullYear(), m = now.getMonth(); // getMonth() is 0-based
+  if (m === 0) { y--; m = 12; }
+  return { year: y, month: m };
+}
+
+/**
  * 回線管理スプレッドシートの月別シートから電話番号を収集する。
- * 全月シートをマージして読み込む（新しい月の情報で上書き）。
+ * 設定シートの対象月に対応する月シートを読み込む。
  * セクション分け構造に対応（キャリアラベル行 → ヘッダー行 → データ行）。
  */
 function _getAllPhonesFromMonthSheets_() {
@@ -644,68 +668,65 @@ function _getAllPhonesFromMonthSheets_() {
   const monthSheets = ss.getSheets().filter(ws => /.*\d+月$/.test(ws.getName()));
   if (monthSheets.length === 0) return result;
 
-  // 古い月から順に処理（新しい月の情報で上書き）
+  // 対象月に対応するシートを特定
+  const target = _getTargetMonth_();
+  const targetNum = target.year * 100 + target.month;
   monthSheets.sort((a, b) => _parseMonthSheetNum_(a.getName()) - _parseMonthSheetNum_(b.getName()));
 
-  // phone → { carrier, cancelled, device, name, loginId } のマップ（全月マージ用）
-  const phoneMap = {};
-
+  let targetSheet = null;
   for (const sheet of monthSheets) {
-    if (sheet.getLastRow() <= 1) continue;
-    const rows = sheet.getDataRange().getValues();
-    let cols = null, sectionCarrier = null;
-
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-
-      // セクションラベル行
-      const labelCarrier = _detectCarrierLabel_(row);
-      if (labelCarrier) { sectionCarrier = labelCarrier; cols = null; continue; }
-
-      // ヘッダー行
-      const phoneColIdx = row.findIndex(c => String(c).trim() === "電話番号");
-      if (phoneColIdx !== -1) {
-        cols = {};
-        row.forEach((c, j) => { const k = String(c).trim(); if (k) cols[k] = j; });
-        continue;
-      }
-
-      if (!cols || cols["電話番号"] === undefined) continue;
-
-      const phone = _normalizePhone_(row[cols["電話番号"]]);
-      if (!phone || !/^\d{10,13}$/.test(phone)) continue;
-
-      let carrier = cols["キャリア"] !== undefined ? _normalizeCarrierName_(row[cols["キャリア"]]) : null;
-      if (!carrier) carrier = sectionCarrier;
-      if (!carrier || !result[carrier]) continue;
-
-      const ci = cols["解約済"];
-      const cancelled = ci !== undefined && String(row[ci] || "").toUpperCase() === "TRUE";
-      const di = cols["運用端末"];
-      const device = di !== undefined ? String(row[di] || "").trim() : "";
-      const ni = cols["名義"] !== undefined ? cols["名義"] : cols["契約者名"];
-      const name = ni !== undefined ? String(row[ni] || "").trim() : "";
-      const ii = cols["ID"];
-      const loginId = ii !== undefined ? String(row[ii] || "").trim() : "";
-
-      // 新しい月の情報で上書き（ただし空値では上書きしない）
-      const key = carrier + ":" + phone;
-      const existing = phoneMap[key];
-      if (existing) {
-        existing.cancelled = cancelled;
-        if (device) existing.device = device;
-        if (name) existing.name = name;
-        if (loginId) existing.loginId = loginId;
-      } else {
-        phoneMap[key] = { phone, carrier, cancelled, device, name, loginId };
-      }
+    if (_parseMonthSheetNum_(sheet.getName()) === targetNum) {
+      targetSheet = sheet;
+      break;
     }
   }
+  // 対象月シートが見つからない場合はデータあり最新月にフォールバック
+  if (!targetSheet) {
+    for (let i = monthSheets.length - 1; i >= 0; i--) {
+      if (monthSheets[i].getLastRow() > 1) { targetSheet = monthSheets[i]; break; }
+    }
+  }
+  if (!targetSheet || targetSheet.getLastRow() <= 1) return result;
 
-  // phoneMap → result に変換
-  for (const entry of Object.values(phoneMap)) {
-    const { phone, carrier, cancelled, device, name, loginId } = entry;
-    result[carrier].push({ phone, cancelled, device, name, loginId });
+  const rows = targetSheet.getDataRange().getValues();
+  let cols = null, sectionCarrier = null;
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+
+    // セクションラベル行
+    const labelCarrier = _detectCarrierLabel_(row);
+    if (labelCarrier) { sectionCarrier = labelCarrier; cols = null; continue; }
+
+    // ヘッダー行
+    const phoneColIdx = row.findIndex(c => String(c).trim() === "電話番号");
+    if (phoneColIdx !== -1) {
+      cols = {};
+      row.forEach((c, j) => { const k = String(c).trim(); if (k) cols[k] = j; });
+      continue;
+    }
+
+    if (!cols || cols["電話番号"] === undefined) continue;
+
+    const phone = _normalizePhone_(row[cols["電話番号"]]);
+    if (!phone || !/^\d{10,13}$/.test(phone)) continue;
+
+    let carrier = cols["キャリア"] !== undefined ? _normalizeCarrierName_(row[cols["キャリア"]]) : null;
+    if (!carrier) carrier = sectionCarrier;
+    if (!carrier || !result[carrier]) continue;
+
+    const ci = cols["解約済"];
+    const cancelled = ci !== undefined && String(row[ci] || "").toUpperCase() === "TRUE";
+    const di = cols["運用端末"];
+    const device = di !== undefined ? String(row[di] || "").trim() : "";
+    const ni = cols["名義"] !== undefined ? cols["名義"] : cols["契約者名"];
+    const name = ni !== undefined ? String(row[ni] || "").trim() : "";
+    const ii = cols["ID"];
+    const loginId = ii !== undefined ? String(row[ii] || "").trim() : "";
+
+    if (!result[carrier].some(p => p.phone === phone)) {
+      result[carrier].push({ phone, cancelled, device, name, loginId });
+    }
   }
   return result;
 }
