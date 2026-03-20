@@ -902,8 +902,8 @@ function _updatePdfLinks_(sheetName, carrier, silent = false, force = false) {
     const hasFormula = !!cell.getFormula();
     if (hasFormula && !force) { overwritten++; continue; }
     const url = entry.file.getUrl();
-    const am = entry.file.getName().match(/_(\d+)円\.pdf$/);
-    const label = am ? `${parseInt(entry.month)}月 ${Number(am[1]).toLocaleString()}円` : `${parseInt(entry.month)}月`;
+    const am = entry.file.getName().match(/_(\d+)円(?:\(税抜\))?\.pdf$/);
+    const label = am ? `${Number(am[1]).toLocaleString()}円` : `${parseInt(entry.month)}月`;
     cell.setFormula(`=HYPERLINK("${url}","${label}")`);
     if (hasFormula) { overwritten++; } else { added++; }
   }
