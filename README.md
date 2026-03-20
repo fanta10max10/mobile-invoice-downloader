@@ -18,11 +18,12 @@ My SoftBankおよびMy Y!mobileにPlaywrightで自動ログインし、指定月
 
 ## 対応キャリア
 
-| キャリア | コマンド | PDFの種類 |
-|---|---|---|
-| SoftBank | `python3 download.py softbank` | 電話番号別 / 一括 / 機種別 |
-| Y!mobile | `python3 download.py ymobile` | 電話番号別のみ |
-| 両方一括 | `python3 download.py all` | ― |
+| キャリア | PDFの種類 |
+|---|---|
+| SoftBank | 電話番号別 / 一括 / 機種別 |
+| Y!mobile | 電話番号別のみ |
+
+認証情報シートのキャリア列から対象キャリアを自動判定するため、コマンド引数でのキャリア指定は不要。
 
 ---
 
@@ -160,18 +161,16 @@ cp env.example .env
 cd ダウンロードツール/
 
 # 前月分をダウンロード（通常はこれだけ）
-python3 download.py softbank     # SoftBankのみ
-python3 download.py ymobile      # Y!mobileのみ
-python3 download.py all          # 両方実行
+python3 download.py
 
 # 特定の月を指定（環境変数は設定シートより優先）
-TARGET_MONTH=202602 python3 download.py all
+TARGET_MONTH=202602 python3 download.py
 
 # ブラウザを表示してデバッグ
-HEADLESS=false python3 download.py softbank
+HEADLESS=false python3 download.py
 
 # 接続テスト（ダウンロードは行わない）
-DRY_RUN=true python3 download.py all
+DRY_RUN=true python3 download.py
 ```
 
 対象月はスプレッドシートの設定シートからも選択できる（ドロップダウン）。環境変数 `TARGET_MONTH` は設定シートより優先される。
@@ -246,7 +245,7 @@ del %TEMP%\softbank_session_*.json
 │       └── SoftBank/
 │           └── *.pdf
 ├── ダウンロードツール/              # スクリプト・設定一式
-│   ├── download.py                 # 統合エントリポイント（python3 download.py softbank/ymobile/all）
+│   ├── download.py                 # 統合エントリポイント（認証情報シートから自動判定）
 │   ├── shared_utils.py             # 全ロジック集約（CarrierConfig/BillingContext/DriveContext等）
 │   ├── setup_spreadsheet.gs        # 携帯領収書管理スプシ用GAS
 │   ├── requirements.txt            # Python依存ライブラリ

@@ -3,12 +3,9 @@
 携帯領収書管理 統合ダウンロードスクリプト
 
 使い方:
-  python3 download.py softbank     # SoftBankのみ
-  python3 download.py ymobile      # Y!mobileのみ
-  python3 download.py all          # 両方実行
+  python3 download.py
 """
 
-import sys
 from pathlib import Path
 
 from shared_utils import CarrierConfig, create_billing_context, run_main
@@ -39,33 +36,12 @@ YMOBILE_CONFIG = CarrierConfig(
     temp_dir_prefix="ymobile_pdf_",
 )
 
-CARRIERS = {
-    "softbank": SOFTBANK_CONFIG,
-    "sb": SOFTBANK_CONFIG,
-    "ymobile": YMOBILE_CONFIG,
-    "ym": YMOBILE_CONFIG,
-}
+ALL_CARRIERS = [SOFTBANK_CONFIG, YMOBILE_CONFIG]
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        print(__doc__.strip())
-        print(f"\n指定可能なキャリア: {', '.join(CARRIERS.keys())}, all")
-        sys.exit(0)
-
-    arg = sys.argv[1].lower()
     script_dir = Path(__file__).resolve().parent
-
-    if arg == "all":
-        targets = [SOFTBANK_CONFIG, YMOBILE_CONFIG]
-    elif arg in CARRIERS:
-        targets = [CARRIERS[arg]]
-    else:
-        print(f"エラー: 不明なキャリア '{sys.argv[1]}'")
-        print(f"指定可能: {', '.join(CARRIERS.keys())}, all")
-        sys.exit(1)
-
-    for config in targets:
+    for config in ALL_CARRIERS:
         ctx = create_billing_context(config, script_dir=script_dir)
         run_main(ctx)
 

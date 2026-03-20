@@ -1633,6 +1633,10 @@ def run_main(ctx: BillingContext) -> None:
     # 回線情報の読み込み
     accounts = load_accounts(ctx)
 
+    if len(accounts) == 0:
+        log.info(f"{ctx.config.display_name} の対象回線がないためスキップします")
+        return
+
     if ctx.dry_run:
         log.info("=== ドライランモード（接続テスト） ===")
         log.info(f"  保存先: {save_dir} ({mode_label})")
