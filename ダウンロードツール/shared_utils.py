@@ -1633,6 +1633,18 @@ def _download_single_pdf(ctx: BillingContext, page, link, label: str, save_dir: 
                 dest = save_dir / f"{stem}_{label}.pdf"
             download.save_as(str(dest))
 
+            # ページから金額取得できなかった場合、PDFテキストから取得してリネーム
+            if not amount:
+                pdf_amount = extract_amount_from_pdf(dest)
+                if pdf_amount:
+                    amount = pdf_amount
+                    new_filename = build_filename(ctx, year, month, phone, amount)
+                    new_dest = save_dir / new_filename
+                    if not new_dest.exists():
+                        dest.rename(new_dest)
+                        dest = new_dest
+                        log.info(f"  PDFから金額取得・リネーム: {new_filename}")
+
             if ctx.drive_ctx is not None:
                 folder_id = ctx.drive_ctx.get_folder_id(year, month)
                 ok = ctx.drive_ctx.upload(dest, folder_id)
