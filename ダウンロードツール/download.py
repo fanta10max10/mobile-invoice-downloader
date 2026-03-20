@@ -139,7 +139,11 @@ def update_amounts():
                     q=f"'{cf['id']}' in parents and mimeType='application/pdf' and name contains '_利用料金明細' and trashed=false",
                     fields="files(id,name)"
                 ).execute().get("files", [])
-                targets.extend(pdfs)
+                # 請求書本体のみ（支払証明書・領収書等は除外）
+                for pdf in pdfs:
+                    name = pdf["name"]
+                    if name.endswith("_利用料金明細.pdf"):
+                        targets.append(pdf)
 
     log.info(f"金額未取得のPDF: {len(targets)}件")
     if not targets:
