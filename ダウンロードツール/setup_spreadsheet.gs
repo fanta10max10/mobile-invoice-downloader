@@ -1143,20 +1143,59 @@ function _extractAmountFromPdf_(file, phone) {
     // au/UQmobile: 電話番号が指定された場合、その番号の個別金額を取得
     if (phone) {
       const digits = phone.replace(/\D/g, "");
-      // NFKC正規化後は半角のみ: 080-2663-6328
       const formatted = digits.slice(0, 3) + "-" + digits.slice(3, 7) + "-" + digits.slice(7);
 
       Logger.log(`[OCR] au/UQ searching: ${formatted}`);
-      Logger.log(`[OCR] text(300): ${text.substring(0, 300)}`);
 
-      // 電話番号の後に ( 1,851 ) 形式の括弧付き金額を検索
-      const esc = formatted.replace(/-/g, "[-]");
-      const pat1 = new RegExp(esc + "[\\s\\S]{0,50}?\\(\\s*([\\d,]+)\\s*\\)");
-      const m1 = text.match(pat1);
-      if (m1) { const a = m1[1].replace(/,/g, ""); if (/^\d+$/.test(a) && a.length <= 7) return a; }
+      // 電話番号の位置を見つける
+      const phoneIdx = text.indexOf(formatted);
+      if (phoneIdx === -1) {
+        Logger.log(`[OCR] phone not found in text`);
+        return null;
+      }
 
-      Logger.log(`[OCR] au/UQ phone=${phone} not found. Near text: ${text.substring(text.indexOf(formatted), text.indexOf(formatted) + 80)}`);
-      return null;  // au/UQでは「計」にフォールバックしない
+      // この電話番号のセクション（次の電話番号パターンまで、または末尾から1000文字）
+      const afterPhone = text.substring(phoneIdx);
+      // 次の電話番号パターン（XXX-XXXX-XXXX）を探す（自分自身を除く）
+      const nextPhoneMatch = afterPhone.substring(formatted.length).match(/\d{3}-\d{4}-\d{4}/);
+      const sectionEnd = nextPhoneMatch ? formatted.length + nextPhoneMatch.index : Math.min(afterPhone.length, 1000);
+      const section = afterPhone.substring(0, sectionEnd);
+
+      Logger.log(`[OCR] section(200): ${section.substring(0, 200)}`);
+
+      // パターン1: 括弧付き金額 ( 1,851 ) — 一番最後のものを採用
+      const pat1Matches = [...section.matchAll(/\(\s*([\d,]+)\s*\)/g)];
+      if (pat1Matches.length > 0) {
+        const lastMatch = pat1Matches[pat1Matches.length - 1];
+        const a = lastMatch[1].replace(/,/g, "");
+        if (/^\d+$/.test(a) && a.length <= 7 && parseInt(a) > 0) {
+          Logger.log(`[OCR] found bracketed amount: ${a}`);
+          return a;
+        }
+      }
+
+      // パターン2: 「小計」「合計」の後の金額
+      const pat2 = section.match(/(?:小計|合計)[^\d]*([\d,]+)/);
+      if (pat2) {
+        const a = pat2[1].replace(/,/g, "");
+        if (/^\d+$/.test(a) && a.length <= 7 && parseInt(a) > 0) {
+          Logger.log(`[OCR] found subtotal: ${a}`);
+          return a;
+        }
+      }
+
+      // パターン3: セクション内の最後の有意な金額（3桁以上の数字）
+      const allAmounts = [...section.matchAll(/([\d,]{3,})/g)]
+        .map(m => m[1].replace(/,/g, ""))
+        .filter(a => /^\d+$/.test(a) && parseInt(a) >= 100 && parseInt(a) <= 9999999);
+      if (allAmounts.length > 0) {
+        const lastAmount = allAmounts[allAmounts.length - 1];
+        Logger.log(`[OCR] fallback last amount in section: ${lastAmount}`);
+        return lastAmount;
+      }
+
+      Logger.log(`[OCR] au/UQ phone=${phone} not found. Near text: ${section.substring(0, 100)}`);
+      return null;
     }
 
     // SoftBank/Ymobile: 「計」の後の金額
