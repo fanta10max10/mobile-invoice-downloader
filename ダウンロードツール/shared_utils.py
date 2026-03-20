@@ -825,6 +825,19 @@ def extract_amount_from_pdf(pdf_path: Path, phone: str = "") -> str:
                     log.info(f"  PDF金額取得（課税対象額）: {a}円(税抜)")
                     return f"{int(a)}円(税抜)"
 
+            # 方式2: 明細ページの電話番号順と課税対象額リストを対応付け
+            # 5回線まとめPDF等で、課税対象額がまとめて記載されるケース
+            detail_phones = []
+            for m in re.finditer(r'(\d{3}-\d{4}-\d{4})\s*\n\s*<\s*\d+月ご利用内訳', text):
+                detail_phones.append(m.group(1))
+            if formatted in detail_phones:
+                phone_idx = detail_phones.index(formatted)
+                all_taxes = re.findall(r'10%消費税の課税対象額\s*([\d,]+)円', text)
+                if phone_idx < len(all_taxes):
+                    a = all_taxes[phone_idx].replace(',', '')
+                    log.info(f"  PDF金額取得（課税対象額リスト対応）: {a}円(税抜) (回線{phone_idx+1}/{len(detail_phones)})")
+                    return f"{int(a)}円(税抜)"
+
             # 方式3: サービス別ご利用料金セクション（au単一回線）
             amount_block = re.search(r'サービス別ご利用料金([\s\S]{0,500}?)(?:ご利用クレジット|●)', text)
             if amount_block:
