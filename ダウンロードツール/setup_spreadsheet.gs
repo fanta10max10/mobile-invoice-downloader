@@ -1096,18 +1096,13 @@ function _extractAmountFromPdf_(file, phone) {
       Logger.log(`[OCR] au/UQ searching: ${formatted}`);
       Logger.log(`[OCR] text(300): ${text.substring(0, 300)}`);
 
-      // パターン1: 電話番号の後に ( 1,851 ) 形式
+      // 電話番号の後に ( 1,851 ) 形式の括弧付き金額を検索
       const esc = formatted.replace(/-/g, "[-]");
-      const pat1 = new RegExp(esc + "[\\s\\S]{0,30}?\\(\\s*([\\d,]+)\\s*\\)");
+      const pat1 = new RegExp(esc + "[\\s\\S]{0,50}?\\(\\s*([\\d,]+)\\s*\\)");
       const m1 = text.match(pat1);
       if (m1) { const a = m1[1].replace(/,/g, ""); if (/^\d+$/.test(a) && a.length <= 7) return a; }
 
-      // パターン2: 電話番号の後に直接金額
-      const pat2 = new RegExp(esc + "[\\s\\S]{0,50}?([\\d,]{3,7})");
-      const m2 = text.match(pat2);
-      if (m2) { const a = m2[1].replace(/,/g, ""); if (/^\d{3,6}$/.test(a)) return a; }
-
-      Logger.log(`[OCR] au/UQ phone=${phone} not found`);
+      Logger.log(`[OCR] au/UQ phone=${phone} not found. Near text: ${text.substring(text.indexOf(formatted), text.indexOf(formatted) + 80)}`);
       return null;  // au/UQでは「計」にフォールバックしない
     }
 
