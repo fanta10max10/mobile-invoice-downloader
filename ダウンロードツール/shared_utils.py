@@ -829,7 +829,22 @@ def extract_amount_from_pdf(pdf_path: Path, phone: str = "") -> str:
                             log.info(f"  PDF金額取得（内訳対応）: {a}円 (電話番号{phone_idx+1}/{len(phone_list)})")
                             return f"{int(a)}円"
 
-            # フォールバック1: サービス別ご利用料金セクションの金額・ラベル対応
+            # フォールバック1: 「10%消費税の課税対象額」から税込金額を算出
+            # 電話番号のセクション内にある場合（2回線まとめ等で(内訳)がないPDF）
+            idx = text.find(formatted)
+            if idx >= 0:
+                after = text[idx:]
+                next_phone = re.search(r'(?<=.)\d{3}-\d{4}-\d{4}', after[len(formatted):])
+                section_end = len(formatted) + next_phone.start() if next_phone else min(len(after), 1000)
+                section = after[:section_end]
+                tax_match = re.search(r'10%消費税の課税対象額\s*([\d,]+)円', section)
+                if tax_match:
+                    taxable = int(tax_match.group(1).replace(',', ''))
+                    total = taxable + int(taxable * 0.1)  # 税込計算
+                    log.info(f"  PDF金額取得（課税対象額から算出）: {total}円 (課税対象額{taxable}円)")
+                    return f"{total}円"
+
+            # フォールバック2: サービス別ご利用料金セクションの金額・ラベル対応
             # 構造: 金額リスト（各行に「X,XXX円」）→ ラベルリスト（au電話料金, UQモバイル...）
             amount_block = re.search(r'サービス別ご利用料金([\s\S]{0,500}?)(?:ご利用クレジット|●)', text)
             if amount_block:
