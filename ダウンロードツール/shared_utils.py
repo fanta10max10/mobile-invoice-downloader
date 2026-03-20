@@ -141,7 +141,7 @@ def parse_pdf_types(raw: str, carrier_family: str = "softbank") -> set[str]:
     """PDFの種類列の値をパースしてセットで返す。"""
     if carrier_family == "au":
         valid = {"請求書", "領収書", "支払証明書"}
-        default = {"請求書"}
+        default = {"請求書", "支払証明書"}
     else:
         valid = {"電話番号別", "一括", "機種別"}
         default = {"電話番号別"}
@@ -785,6 +785,91 @@ def ask_security_code(ctx: BillingContext, phone_number: str) -> str | None:
 # ══════════════════════════════════════════════════════════
 #  ファイル名・保存関連
 # ══════════════════════════════════════════════════════════
+
+def extract_amount_from_pdf(pdf_path: Path, phone: str = "") -> str:
+    """PDFファイルからテキストを抽出して請求金額を取得する。
+    au/UQのまとめ請求PDFの場合、phoneで指定した電話番号の個別金額を取得する。
+    """
+    try:
+        import fitz  # pymupdf
+    except ImportError:
+        log.warning("  pymupdfが未インストールのためPDF金額取得をスキップ")
+        return ""
+    try:
+        doc = fitz.open(str(pdf_path))
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        doc.close()
+        # NFKC正規化
+        import unicodedata
+        text = unicodedata.normalize("NFKC", text)
+        text = re.sub(r'[‐‑‒–—−﹣－]', '-', text)
+
+        if phone:
+            # au/UQ: 電話番号の個別金額を取得
+            # KDDI請求書の構造: 括弧付き金額リストと電話番号リストが別の場所にあり、順番で対応
+            # 例: (1,852円) (2,952円) ... (内訳)080-1438-8343 080-2663-6328 ...
+            digits = re.sub(r'\D', '', phone)
+            formatted = f"{digits[:3]}-{digits[3:7]}-{digits[7:]}" if len(digits) >= 10 else phone
+
+            # 「(内訳)」の後にある電話番号リストを探す
+            breakdown_match = re.search(r'\(内訳\)([\s\S]{0,500}?)(?:au|※|ご利用)', text)
+            if breakdown_match:
+                phone_section = breakdown_match.group(1)
+                phone_list = re.findall(r'\d{3}-\d{4}-\d{4}', phone_section)
+                if formatted in phone_list:
+                    phone_idx = phone_list.index(formatted)
+                    # 括弧付き金額リスト ( X,XXX円) を取得（「(内訳)」より前の部分から）
+                    before_breakdown = text[:breakdown_match.start()]
+                    amounts = re.findall(r'\(\s*([\d,]+)円?\s*\)', before_breakdown)
+                    if phone_idx < len(amounts):
+                        a = amounts[phone_idx].replace(',', '')
+                        if a.isdigit() and 0 < int(a) <= 9999999:
+                            log.info(f"  PDF金額取得（内訳対応）: {a}円 (電話番号{phone_idx+1}/{len(phone_list)})")
+                            return f"{int(a)}円"
+
+            # フォールバック1: サービス別ご利用料金セクションの金額・ラベル対応
+            # 構造: 金額リスト（各行に「X,XXX円」）→ ラベルリスト（au電話料金, UQモバイル...）
+            amount_block = re.search(r'サービス別ご利用料金([\s\S]{0,500}?)(?:ご利用クレジット|●)', text)
+            if amount_block:
+                block = amount_block.group(1)
+                amounts_in_block = re.findall(r'([\d,]+)円', block)
+                labels_in_block = re.findall(r'(au電話料金|au機器代金[^\n]*|UQモバイル電話料金|auひかり[^\n]*)', block)
+                # au電話料金のインデックスを探す
+                for target_label in ['au電話料金', 'UQモバイル電話料金']:
+                    if target_label in labels_in_block:
+                        label_idx = labels_in_block.index(target_label)
+                        if label_idx < len(amounts_in_block):
+                            a = amounts_in_block[label_idx].replace(',', '')
+                            if a.isdigit() and 0 < int(a) <= 9999999:
+                                log.info(f"  PDF金額取得（{target_label}）: {a}円")
+                                return f"{int(a)}円"
+
+            # フォールバック2: 電話番号の近くの括弧付き金額
+            idx = text.find(formatted)
+            if idx >= 0:
+                nearby = text[max(0, idx-200):idx+200]
+                bracket_matches = list(re.finditer(r'\(\s*([\d,]+)\s*\)', nearby))
+                if bracket_matches:
+                    a = bracket_matches[-1].group(1).replace(',', '')
+                    if a.isdigit() and 0 < int(a) <= 9999999:
+                        log.info(f"  PDF金額取得（近傍括弧）: {a}円")
+                        return f"{int(a)}円"
+        else:
+            # SoftBank/Ymobile: 「計」の後の金額
+            for pat in [r'(?<![小合])計\s*([\d,]+)', r'小計\s*([\d,]+)']:
+                m = re.search(pat, text)
+                if m:
+                    a = m.group(1).replace(',', '')
+                    if a.isdigit():
+                        log.info(f"  PDF金額取得: {a}円")
+                        return f"{int(a)}円"
+        return ""
+    except Exception as e:
+        log.warning(f"  PDF金額取得エラー: {e}")
+        return ""
+
 
 def sanitize_amount(text: str) -> str:
     """請求金額テキストから数字だけ抽出して「○○円」形式にする"""
@@ -2405,6 +2490,17 @@ def _au_download_pdf_from_page(
                 dest = save_dir / filename
 
                 download.save_as(str(dest))
+
+                # ページから金額取得できなかった場合、PDFテキストから取得してリネーム
+                if not amount and pdf_type in ("請求書", "電話番号別"):
+                    pdf_amount = extract_amount_from_pdf(dest, phone)
+                    if pdf_amount:
+                        amount = pdf_amount
+                        new_filename = build_filename(ctx, year, month, phone, amount)
+                        new_dest = save_dir / new_filename
+                        dest.rename(new_dest)
+                        dest = new_dest
+                        log.info(f"  PDFから金額取得・リネーム: {new_filename}")
 
                 if ctx.drive_ctx is not None:
                     folder_id = ctx.drive_ctx.get_folder_id(year, month)

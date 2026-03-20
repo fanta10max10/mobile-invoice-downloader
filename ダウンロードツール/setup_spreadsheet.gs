@@ -322,7 +322,7 @@ function _getPhoneManagerHtml_() {
           var phones = phoneData[c] || [];
           var saved = savedSelections[c] || {};
           phones.forEach(function(p) {
-            var defaultPdfType = (c === "au" || c === "UQmobile") ? "請求書" : "電話番号別";
+            var defaultPdfType = (c === "au" || c === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
             selections[c][p.phone] = { pdfType: (saved[p.phone] && saved[p.phone].pdfType) || defaultPdfType };
           });
         });
@@ -354,7 +354,7 @@ function _getPhoneManagerHtml_() {
     var html = "";
     phones.forEach(function(p) {
       var checked = sel[p.phone] ? "checked" : "";
-      var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書" : "電話番号別";
+      var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
       var pdfType = (sel[p.phone] && sel[p.phone].pdfType) || defaultPdfType;
       var label = p.device ? p.phone + " (" + p.device + ")" : p.phone;
       if (p.cancelled) label += "（解約済）";
@@ -379,7 +379,7 @@ function _getPhoneManagerHtml_() {
     if (!selections[currentCarrier]) selections[currentCarrier] = {};
     if (el.checked) {
       var selEl = el.parentElement.querySelector("select");
-      var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書" : "電話番号別";
+      var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
       selections[currentCarrier][el.dataset.phone] = { pdfType: selEl ? selEl.value : defaultPdfType };
     } else {
       delete selections[currentCarrier][el.dataset.phone];
@@ -401,7 +401,7 @@ function _getPhoneManagerHtml_() {
     if (allChecked) {
       phones.forEach(function(p) { delete selections[currentCarrier][p.phone]; });
     } else {
-      var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書" : "電話番号別";
+      var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
       phones.forEach(function(p) {
         if (!selections[currentCarrier][p.phone])
           selections[currentCarrier][p.phone] = { pdfType: defaultPdfType };
@@ -512,7 +512,7 @@ function savePhoneSelections(selections) {
     for (const carrier of ALL_CARRIERS) {
       const sel = selections[carrier] || {};
       for (const phone of Object.keys(sel)) {
-        const defaultPdfType = (carrier === "au" || carrier === "UQmobile") ? "請求書" : "電話番号別";
+        const defaultPdfType = (carrier === "au" || carrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
         const pdfType = sel[phone].pdfType || defaultPdfType;
         const status = cancelledSet.has(phone) ? "解約済" : "契約中";
         if (status === "解約済") {
