@@ -530,12 +530,14 @@ function savePhoneSelections(selections) {
     if (allRows.length > 0) {
       authSheet.getRange(2, 1, allRows.length, 6).setValues(allRows);
     }
-    // 新データより下に残ったゴミ行を確実にクリア
+    // 新データより下のゴミ行・ドロップダウンを確実にクリア
     const newLastRow = allRows.length + 1;
-    const sheetLastRow = authSheet.getLastRow();
-    if (sheetLastRow > newLastRow) {
-      authSheet.getRange(newLastRow + 1, 1, sheetLastRow - newLastRow, lastCol).clearContent();
-      authSheet.getRange(newLastRow + 1, 1, sheetLastRow - newLastRow, lastCol).clearFormat();
+    const maxRows = authSheet.getMaxRows();
+    if (maxRows > newLastRow) {
+      const surplusRows = maxRows - newLastRow;
+      authSheet.getRange(newLastRow + 1, 1, surplusRows, lastCol).clearContent();
+      authSheet.getRange(newLastRow + 1, 1, surplusRows, lastCol).clearFormat();
+      authSheet.getRange(newLastRow + 1, 1, surplusRows, lastCol).clearDataValidations();
     }
     authSheet.getRange("A:A").setNumberFormat("@");
 
