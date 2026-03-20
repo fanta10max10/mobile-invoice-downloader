@@ -2300,22 +2300,47 @@ def _au_download_pdf_from_page(
             cb_count = checkboxes.count()
             if cb_count > 0:
                 log.info(f"  チェックボックス形式を検出（{cb_count}件）")
+                # マッチパターン: value末尾 "_YYYYMM"、value含む "YYYYMM"、
+                # またはラベルテキストに "YYYY年M月" を含む
+                target_year_month_text = f"{int(year)}年{int(month)}月"  # "2026年1月"
                 target_found = False
                 for i in range(cb_count):
                     cb = checkboxes.nth(i)
                     value = cb.get_attribute("value") or ""
-                    if value.endswith(f"_{target_ym}"):
-                        # 対象月はチェックを入れる
+                    label_text = ""
+                    try:
+                        label_text = cb.evaluate("""el => {
+                            const label = el.closest('label') || el.parentElement;
+                            return label ? label.textContent.trim() : '';
+                        }""")
+                    except Exception:
+                        pass
+                    is_target = (
+                        value.endswith(f"_{target_ym}")
+                        or target_ym in value
+                        or target_year_month_text in label_text
+                    )
+                    if is_target:
                         if not cb.is_checked():
                             cb.check(force=True)
-                        log.info(f"  対象月をチェック: value={value}")
+                        log.info(f"  対象月をチェック: value={value}, label={label_text[:40]}")
                         target_found = True
                     else:
-                        # 対象月以外はチェックを外す
                         if cb.is_checked():
                             cb.uncheck(force=True)
                 if target_found:
                     month_selected = True
+                else:
+                    # デバッグ: 実際のチェックボックス値を列挙
+                    for i in range(min(cb_count, 10)):
+                        cb = checkboxes.nth(i)
+                        v = cb.get_attribute("value") or ""
+                        lbl = ""
+                        try:
+                            lbl = cb.evaluate("el => (el.closest('label') || el.parentElement)?.textContent?.trim()?.substring(0, 50) || ''")
+                        except Exception:
+                            pass
+                        log.info(f"    cb[{i}]: value={v}, label={lbl}")
 
         if not month_selected:
             log.error(f"  対象月 {target_ym} の選択肢が見つかりません (URL: {page.url})")
