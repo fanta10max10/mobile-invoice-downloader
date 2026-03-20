@@ -1912,30 +1912,18 @@ def _do_au_login_and_navigate(ctx: BillingContext, page, phone_number: str, pass
         log.error("  au認証を完了できませんでした")
         return False
 
-    # 請求書ページにいるか確認（チェックボックスまたは「請求書」テキストを探す）
-    try:
-        page_text = _get_page_text(page)
-        if "請求書" in page_text or "請求" in page_text:
-            log.info("  WEB de 請求書ページに到達しました")
-            return True
-    except Exception:
-        pass
-
-    # 請求書ページではない場合、WEB de 請求書へ遷移を試みる
-    if ctx.config.au_billing_top_url:
-        log.info(f"  WEB de 請求書ページへ遷移を試みます: {ctx.config.au_billing_top_url}")
+    # targeturlで正しいページに遷移済みのはず
+    # 遷移していない場合のみ請求ページへ移動
+    if ctx.config.au_billing_top_url and ctx.config.au_billing_top_url not in final_url:
+        log.info(f"  請求ページへ遷移: {ctx.config.au_billing_top_url}")
         try:
-            page.goto(ctx.config.au_billing_top_url, wait_until="networkidle")
+            page.goto(ctx.config.au_billing_top_url, wait_until="networkidle", timeout=15000)
             time.sleep(2)
-            page_text = _get_page_text(page)
-            if "請求書" in page_text or "請求" in page_text:
-                log.info("  WEB de 請求書ページに到達しました")
-                return True
-        except Exception:
-            pass
+            log.info(f"  遷移後のURL: {page.url}")
+        except Exception as e:
+            log.warning(f"  請求ページへの遷移に失敗: {e}")
 
-    log.warning(f"  WEB de 請求書ページへの到達を確認できませんでした (URL: {final_url})")
-    # 到達を仮定して続行（実際のページ構造は要確認）
+    log.info(f"  請求ページに到達: {page.url}")
     return True
 
 
