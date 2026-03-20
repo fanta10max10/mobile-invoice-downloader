@@ -808,29 +808,11 @@ def extract_amount_from_pdf(pdf_path: Path, phone: str = "") -> str:
 
         if phone:
             # au/UQ: 電話番号の個別金額を取得
-            # KDDI請求書の構造: 括弧付き金額リストと電話番号リストが別の場所にあり、順番で対応
-            # 例: (1,852円) (2,952円) ... (内訳)080-1438-8343 080-2663-6328 ...
             digits = re.sub(r'\D', '', phone)
             formatted = f"{digits[:3]}-{digits[3:7]}-{digits[7:]}" if len(digits) >= 10 else phone
 
-            # 「(内訳)」の後にある電話番号リストを探す
-            breakdown_match = re.search(r'\(内訳\)([\s\S]{0,500}?)(?:au|※|ご利用)', text)
-            if breakdown_match:
-                phone_section = breakdown_match.group(1)
-                phone_list = re.findall(r'\d{3}-\d{4}-\d{4}', phone_section)
-                if formatted in phone_list:
-                    phone_idx = phone_list.index(formatted)
-                    # 括弧付き金額リスト ( X,XXX円) を取得（「(内訳)」より前の部分から）
-                    before_breakdown = text[:breakdown_match.start()]
-                    amounts = re.findall(r'\(\s*([\d,]+)円?\s*\)', before_breakdown)
-                    if phone_idx < len(amounts):
-                        a = amounts[phone_idx].replace(',', '')
-                        if a.isdigit() and 0 < int(a) <= 9999999:
-                            log.info(f"  PDF金額取得（内訳対応）: {a}円 (電話番号{phone_idx+1}/{len(phone_list)})")
-                            return f"{int(a)}円"
-
-            # フォールバック1: 「10%消費税の課税対象額」から税込金額を算出
-            # 電話番号のセクション内にある場合（2回線まとめ等で(内訳)がないPDF）
+            # 方式1（最優先）: 電話番号セクション内の「10%消費税の課税対象額」から税込算出
+            # 全au/UQ PDFに各回線ごとに記載されるため最も汎用的
             idx = text.find(formatted)
             if idx >= 0:
                 after = text[idx:]
@@ -840,18 +822,31 @@ def extract_amount_from_pdf(pdf_path: Path, phone: str = "") -> str:
                 tax_match = re.search(r'10%消費税の課税対象額\s*([\d,]+)円', section)
                 if tax_match:
                     taxable = int(tax_match.group(1).replace(',', ''))
-                    total = taxable + int(taxable * 0.1)  # 税込計算
+                    total = taxable + int(taxable * 0.1)
                     log.info(f"  PDF金額取得（課税対象額から算出）: {total}円 (課税対象額{taxable}円)")
                     return f"{total}円"
 
-            # フォールバック2: サービス別ご利用料金セクションの金額・ラベル対応
-            # 構造: 金額リスト（各行に「X,XXX円」）→ ラベルリスト（au電話料金, UQモバイル...）
+            # 方式2: 「(内訳)」セクションの電話番号リスト＋金額リスト対応（5回線まとめ等）
+            breakdown_match = re.search(r'\(内訳\)([\s\S]{0,500}?)(?:au|※|ご利用)', text)
+            if breakdown_match:
+                phone_section = breakdown_match.group(1)
+                phone_list = re.findall(r'\d{3}-\d{4}-\d{4}', phone_section)
+                if formatted in phone_list:
+                    phone_idx = phone_list.index(formatted)
+                    before_breakdown = text[:breakdown_match.start()]
+                    amounts = re.findall(r'\(\s*([\d,]+)円?\s*\)', before_breakdown)
+                    if phone_idx < len(amounts):
+                        a = amounts[phone_idx].replace(',', '')
+                        if a.isdigit() and 0 < int(a) <= 9999999:
+                            log.info(f"  PDF金額取得（内訳対応）: {a}円 (電話番号{phone_idx+1}/{len(phone_list)})")
+                            return f"{int(a)}円"
+
+            # 方式3: サービス別ご利用料金セクション（au単一回線）
             amount_block = re.search(r'サービス別ご利用料金([\s\S]{0,500}?)(?:ご利用クレジット|●)', text)
             if amount_block:
                 block = amount_block.group(1)
                 amounts_in_block = re.findall(r'([\d,]+)円', block)
                 labels_in_block = re.findall(r'(au電話料金|au機器代金[^\n]*|UQモバイル電話料金|auひかり[^\n]*)', block)
-                # au電話料金のインデックスを探す
                 for target_label in ['au電話料金', 'UQモバイル電話料金']:
                     if target_label in labels_in_block:
                         label_idx = labels_in_block.index(target_label)
@@ -860,17 +855,6 @@ def extract_amount_from_pdf(pdf_path: Path, phone: str = "") -> str:
                             if a.isdigit() and 0 < int(a) <= 9999999:
                                 log.info(f"  PDF金額取得（{target_label}）: {a}円")
                                 return f"{int(a)}円"
-
-            # フォールバック2: 電話番号の近くの括弧付き金額
-            idx = text.find(formatted)
-            if idx >= 0:
-                nearby = text[max(0, idx-200):idx+200]
-                bracket_matches = list(re.finditer(r'\(\s*([\d,]+)\s*\)', nearby))
-                if bracket_matches:
-                    a = bracket_matches[-1].group(1).replace(',', '')
-                    if a.isdigit() and 0 < int(a) <= 9999999:
-                        log.info(f"  PDF金額取得（近傍括弧）: {a}円")
-                        return f"{int(a)}円"
         else:
             # SoftBank/Ymobile: 「計」の後の金額
             for pat in [r'(?<![小合])計\s*([\d,]+)', r'小計\s*([\d,]+)']:
