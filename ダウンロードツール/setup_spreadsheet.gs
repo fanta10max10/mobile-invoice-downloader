@@ -115,7 +115,7 @@ function setupSettingsSheet_(ss) {
   _upsertSettingRow_(sheet, "au/UQパスワード", "",
     "au / UQ mobile 共通のau IDパスワード。");
   _upsertSettingRow_(sheet, "au暗証番号", "",
-    "au / UQ mobile の4桁暗証番号（請求書閲覧時に必要な場合あり）。");
+    "au / UQ mobile の4桁暗証番号（請求書閲覧時に必要な場合あり）。", true);
   _upsertSettingRow_(sheet, "対象月", "自動（前月）",
     "ダウンロードする月。「自動（前月）」= 実行時の前月。");
   _setTargetMonthValidation_(sheet);
@@ -1006,12 +1006,19 @@ function _getMonthColumnNum_(sheet, year, month) {
   return idx === -1 ? null : idx + 1;
 }
 
-function _upsertSettingRow_(sheet, key, defaultValue, noteText) {
+function _upsertSettingRow_(sheet, key, defaultValue, noteText, forceText = false) {
   const data = sheet.getDataRange().getValues();
-  for (let i = 1; i < data.length; i++) { if (String(data[i][0]).trim() === key) return; }
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() === key) {
+      // 既存行があってもテキスト書式を適用（先頭0の保持のため）
+      if (forceText) sheet.getRange(i + 1, 2).setNumberFormat("@");
+      return;
+    }
+  }
   const r = sheet.getLastRow() + 1;
   sheet.getRange(r, 1).setValue(key);
   const v = sheet.getRange(r, 2);
+  if (forceText) v.setNumberFormat("@");
   v.setValue(defaultValue);
   if (noteText) v.setNote(noteText);
 }

@@ -1988,13 +1988,17 @@ def _handle_au_2fa(ctx: BillingContext, page, phone_number: str) -> bool:
 
 
 def _load_au_pin(ctx: BillingContext) -> "str | None":
-    """設定シートからau暗証番号を取得する。"""
+    """設定シートからau暗証番号を取得する。4桁でなければエラー。"""
     if not ctx.config.au_pin_setting_name:
         return None
     try:
         gc = get_gspread_client()
         sh = open_sheet(gc, ctx.spreadsheet_id)
-        return load_password_from_settings(sh, ctx.config.au_pin_setting_name)
+        pin = load_password_from_settings(sh, ctx.config.au_pin_setting_name)
+        if pin and len(pin) != 4:
+            log.error(f"  au暗証番号が4桁ではありません（{len(pin)}桁）。設定シートの書式がテキストになっているか確認してください。")
+            return None
+        return pin
     except Exception:
         return None
 
