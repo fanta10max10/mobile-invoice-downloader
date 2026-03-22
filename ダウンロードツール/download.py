@@ -78,7 +78,20 @@ UQ_CONFIG = CarrierConfig(
     temp_dir_prefix="uqmobile_pdf_",
 )
 
-ALL_CARRIERS = [SOFTBANK_CONFIG, YMOBILE_CONFIG, AU_CONFIG, UQ_CONFIG]
+DOCOMO_CONFIG = CarrierConfig(
+    carrier_name="docomo",
+    display_name="My docomo",
+    auth_domain="id.smt.docomo.ne.jp",
+    login_url="https://www.docomo.ne.jp/mydocomo/",
+    company_name="株式会社NTTドコモ",
+    carrier_family="docomo",
+    password_setting_name="dアカウントパスワード",
+    code_file_prefix="docomo",
+    session_file_prefix="docomo",
+    temp_dir_prefix="docomo_pdf_",
+)
+
+ALL_CARRIERS = [SOFTBANK_CONFIG, YMOBILE_CONFIG, AU_CONFIG, UQ_CONFIG, DOCOMO_CONFIG]
 
 
 def update_amounts():

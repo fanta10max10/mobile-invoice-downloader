@@ -2,7 +2,7 @@
 
 ## プロジェクト概要
 
-携帯キャリア（SoftBank / Y!mobile / au / UQ mobile）の料金明細PDFを自動ダウンロードしてGoogle Driveに保存するツール集。
+携帯キャリア（SoftBank / Y!mobile / au / UQ mobile / docomo）の料金明細PDFを自動ダウンロードしてGoogle Driveに保存するツール集。
 
 ## アーキテクチャ
 
@@ -10,7 +10,7 @@
 - **認証情報シートは6列**: 電話番号 | キャリア | PDFの種類 | 運用端末 | 状態 | ログインID（パスワード列なし、設定シートに一元管理）
 - **HTMLサイドバー方式**: GASメニューからサイドバーを開いて電話番号を選択
 - **共通モジュール方式**: `shared_utils.py` にすべてのロジックを集約。各キャリアスクリプトは `CarrierConfig`（定数）+ `create_billing_context()` + `run_main()` を呼ぶだけの薄いラッパー（約80行）
-- **carrier_family分岐**: `CarrierConfig.carrier_family` で `"softbank"`（SoftBank/Ymobile: WCOシステム）と `"au"`（au/UQmobile: WEB de 請求書）のフローを切り替え
+- **carrier_family分岐**: `CarrierConfig.carrier_family` で `"softbank"`（SoftBank/Ymobile: WCOシステム）、`"au"`（au/UQmobile: WEB de 請求書）、`"docomo"`（docomo: My docomo）のフローを切り替え
 
 ## 用語ルール
 

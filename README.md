@@ -6,7 +6,7 @@
 
 ## 概要
 
-My SoftBank / My Y!mobile / My au / My UQ mobile にPlaywrightで自動ログインし、指定月の請求書PDFをダウンロードしてGoogle Drive APIで直接アップロードするPythonスクリプト群。
+My SoftBank / My Y!mobile / My au / My UQ mobile / My docomo にPlaywrightで自動ログインし、指定月の請求書PDFをダウンロードしてGoogle Drive APIで直接アップロードするPythonスクリプト群。
 
 - 複数回線の一括処理
 - SMS認証（セッション再利用でスキップ可能）
@@ -24,6 +24,7 @@ My SoftBank / My Y!mobile / My au / My UQ mobile にPlaywrightで自動ログイ
 | Y!mobile | 電話番号別のみ | SoftBank ID（優先）または電話番号 + SMS認証 |
 | au | 請求書 / 領収書 / 支払証明書 | au ID + 2段階認証 |
 | UQ mobile | 請求書 / 領収書 / 支払証明書 | au ID + 2段階認証 |
+| docomo | 適格請求書 / 利用内訳 | dアカウント + 2段階認証（SMS） |
 
 認証情報シートのキャリア列から対象キャリアを自動判定するため、コマンド引数でのキャリア指定は不要。
 
@@ -94,12 +95,13 @@ playwright install chromium
 
 | シート名 | 役割 |
 |---|---|
-| 設定 | PDF保存先・パスワード（SB/YM用・au/UQ用）・暗証番号・対象月・回線管理スプシURL |
+| 設定 | PDF保存先・パスワード（SB/YM用・au/UQ用・docomo用）・暗証番号・対象月・回線管理スプシURL |
 | 認証情報 | ダウンロード対象の電話番号・キャリア・PDFの種類・運用端末 |
 | SoftBankリンク | SoftBank PDF月別リンク（GAS自動更新） |
 | Ymobileリンク | Y!mobile PDF月別リンク（GAS自動更新） |
 | auリンク | au PDF月別リンク（GAS自動更新） |
 | UQmobileリンク | UQ mobile PDF月別リンク（GAS自動更新） |
+| docomoリンク | docomo PDF月別リンク（GAS自動更新） |
 | ダウンロード履歴 | Pythonスクリプトがダウンロード完了時に自動記録（日時・キャリア・電話番号・対象月・ファイル名・結果） |
 
 #### 認証情報シート（ダウンロード対象の電話番号）
@@ -115,10 +117,11 @@ playwright install chromium
 | 090XXXXXXXX | SoftBank | 電話番号別 | | 解約済 | sb_user02 |
 
 - パスワードは設定シートで一元管理（認証情報シートにはパスワード列なし）
-- `キャリア` 列で SoftBank / Ymobile / au / UQmobile を自動フィルタリング
+- `キャリア` 列で SoftBank / Ymobile / au / UQmobile / docomo を自動フィルタリング
 - SoftBankは `電話番号別` / `一括` / `機種別` をカンマ区切りで複数指定可
 - au/UQは `請求書` / `領収書` / `支払証明書` をカンマ区切りで複数指定可
-- ログインID: SoftBank/Ymobile → SoftBank ID、au/UQ → au ID（回線管理スプレッドシートの「ID」列から自動設定）
+- docomoは `適格請求書` / `利用内訳` をカンマ区切りで複数指定可
+- ログインID: SoftBank/Ymobile → SoftBank ID、au/UQ → au ID、docomo → dアカウントID（回線管理スプレッドシートの「ID」列から自動設定）
 - SoftBank/Ymobileは解約後SoftBank IDが必須（電話番号でログイン不可）。未設定時はエラー
 - 解約済回線もサイドバーで選択すればダウンロード対象になる
 - 運用端末・状態はサイドバー保存時に回線管理スプレッドシートから自動設定
@@ -154,6 +157,7 @@ playwright install chromium
 | パスワード | SoftBank / Y!mobile 共通のログインパスワード |
 | au/UQパスワード | au / UQ mobile 共通のau IDパスワード |
 | au暗証番号 | au / UQ mobile の4桁暗証番号（必要な場合） |
+| dアカウントパスワード | docomo のdアカウントパスワード |
 | 対象月 | ドロップダウン（「自動（前月）」= 前月自動） |
 
 ### 5. 環境変数（.env）
@@ -208,6 +212,7 @@ DRY_RUN=true python3 download.py
   ターミナル入力 または 以下のコマンドで渡してください:
     echo '123' > /tmp/softbank_security_code.txt   ← SoftBankの場合
     echo '123' > /tmp/ymobile_security_code.txt    ← Y!mobileの場合
+    echo '123456' > /tmp/docomo_security_code.txt  ← docomoの場合（6桁）
 ============================================================
 ```
 
@@ -335,6 +340,20 @@ WEB de 請求書の閲覧に4桁の暗証番号が必要な場合がある。設
 
 **2段階認証でワンタイムURLが届く**
 au IDの2段階認証にはSMS確認コード方式とワンタイムURL方式がある。ワンタイムURL方式の場合、SMSに届いたURLをタップして認証を完了する必要がある（タイムアウトまでに操作）。
+
+### docomo固有
+
+**dアカウントログインが通らない**
+dアカウントIDはメールアドレスまたは電話番号。設定シートの「dアカウントパスワード」にdアカウントのパスワードが正しく設定されているか確認する。
+
+**2段階認証でSMSコードが届かない**
+dアカウントの2段階認証はSMSまたはメールで6桁のセキュリティコードが届く。SMS/メールが届かない場合はdアカウントの設定を確認する。
+
+**パスキー認証を要求される**
+2026年5月頃にdアカウントはパスキー認証に統一される予定。パスキーが強制された場合、現在のID+パスワード方式では認証できなくなる。
+
+**Web料金明細サービスが未契約**
+利用内訳のダウンロードには「Web料金明細サービス」の契約が必要（無料）。My docomoから事前に申し込む。
 
 ---
 
