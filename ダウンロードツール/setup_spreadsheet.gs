@@ -792,9 +792,10 @@ function _getCurrentSelections_() {
   for (let i = 1; i < data.length; i++) {
     const phone = _normalizePhone_(data[i][pi]);
     const carrier = ci !== -1 ? String(data[i][ci] || "").trim() : "";
-    const pdfType = ti !== -1 ? String(data[i][ti] || "").trim() : "電話番号別";
+    const defaultPdf = (carrier === "docomo") ? "一括請求" : (carrier === "au" || carrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
+    const pdfType = ti !== -1 ? String(data[i][ti] || "").trim() : defaultPdf;
     if (phone && carrier && result[carrier]) {
-      result[carrier][phone] = { pdfType: pdfType || "電話番号別" };
+      result[carrier][phone] = { pdfType: pdfType || defaultPdf };
     }
   }
   return result;
