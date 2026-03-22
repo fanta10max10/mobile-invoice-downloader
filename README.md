@@ -24,7 +24,7 @@ My SoftBank / My Y!mobile / My au / My UQ mobile / My docomo にPlaywrightで自
 | Y!mobile | 電話番号別のみ | SoftBank ID（優先）または電話番号 + SMS認証 |
 | au | 請求書 / 領収書 / 支払証明書 | au ID + 2段階認証 |
 | UQ mobile | 請求書 / 領収書 / 支払証明書 | au ID + 2段階認証 |
-| docomo | 適格請求書 / 利用内訳 | dアカウント + 2段階認証（SMS） |
+| docomo | 利用内訳（一括請求） / 利用内訳(個別) | dアカウント + 2段階認証（SMS 6桁） |
 
 認証情報シートのキャリア列から対象キャリアを自動判定するため、コマンド引数でのキャリア指定は不要。
 
@@ -120,7 +120,7 @@ playwright install chromium
 - `キャリア` 列で SoftBank / Ymobile / au / UQmobile / docomo を自動フィルタリング
 - SoftBankは `電話番号別` / `一括` / `機種別` をカンマ区切りで複数指定可
 - au/UQは `請求書` / `領収書` / `支払証明書` をカンマ区切りで複数指定可
-- docomoは `適格請求書` / `利用内訳` をカンマ区切りで複数指定可
+- docomoは `利用内訳`（一括請求、デフォルト） / `利用内訳(個別)` を選択可
 - ログインID: SoftBank/Ymobile → SoftBank ID、au/UQ → au ID、docomo → dアカウントID（回線管理スプレッドシートの「ID」列から自動設定）
 - SoftBank/Ymobileは解約後SoftBank IDが必須（電話番号でログイン不可）。未設定時はエラー
 - 解約済回線もサイドバーで選択すればダウンロード対象になる
