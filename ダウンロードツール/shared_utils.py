@@ -87,7 +87,8 @@ class BillingContext:
     drive_ctx: "DriveContext | None" = None
     temp_save_dir: Path | None = None
     phone_device_map: dict[str, str] = field(default_factory=dict)
-    phone_login_id_map: dict[str, str] = field(default_factory=dict)  # 電話番号 → au ID
+    phone_login_id_map: dict[str, str] = field(default_factory=dict)  # 電話番号 → au ID / dアカウントID
+    docomo_bulk_downloaded: set[str] = field(default_factory=set)  # dアカウントIDごとの一括請求DL済みフラグ
 
 
 # ══════════════════════════════════════════════════════════
@@ -2973,13 +2974,27 @@ def _docomo_download_pdf_from_page(
 
     any_success = False
     filenames = []
+    login_id = ctx.phone_login_id_map.get(phone, phone)
 
     for pdf_type in sorted(pdf_types):
-        individual = (pdf_type == "利用内訳")
-        fname = _docomo_download_usage_detail(ctx, page, save_dir, year, month, phone, individual=individual)
-        if fname:
-            any_success = True
-            filenames.append(fname)
+        if pdf_type == "一括請求":
+            # 同じdアカウントで既に一括請求をダウンロード済みならスキップ
+            if login_id in ctx.docomo_bulk_downloaded:
+                log.info(f"  一括請求は同じdアカウント（{login_id[:5]}***）で既にダウンロード済み → スキップ")
+                any_success = True  # エラーではない
+                continue
+            fname = _docomo_download_usage_detail(ctx, page, save_dir, year, month, phone, individual=False)
+            if fname:
+                ctx.docomo_bulk_downloaded.add(login_id)
+                any_success = True
+                filenames.append(fname)
+        elif pdf_type == "利用内訳":
+            fname = _docomo_download_usage_detail(ctx, page, save_dir, year, month, phone, individual=True)
+            if fname:
+                any_success = True
+                filenames.append(fname)
+        else:
+            log.warning(f"  不明なPDFの種類: {pdf_type}")
 
     if not any_success:
         log.error("指定した種別のPDFがダウンロードできませんでした")
@@ -3037,12 +3052,11 @@ def _docomo_download_usage_detail(
         selects = page.locator("select")
         if selects.count() >= 2:
             line_select = selects.nth(1)
+            options = line_select.evaluate(
+                "el => Array.from(el.options).map(o => ({value: o.value, text: o.textContent.trim()}))"
+            )
             if individual:
                 # 個別回線: 電話番号でマッチするoptionを探す
-                phone_formatted = f"{phone[:3]}-{phone[3:7]}-{phone[7:]}" if len(phone) >= 10 else phone
-                options = line_select.evaluate(
-                    "el => Array.from(el.options).map(o => ({value: o.value, text: o.textContent.trim()}))"
-                )
                 selected = False
                 for opt in options:
                     digits = re.sub(r'\D', '', opt["text"])
@@ -3055,8 +3069,29 @@ def _docomo_download_usage_detail(
                     log.error(f"  電話番号 {phone} にマッチする回線がドロップダウンにありません")
                     return None
             else:
-                line_select.select_option(value="0")  # 一括請求合計
-                log.info("  「一括請求合計」を選択しました")
+                # 一括請求合計: ドロップダウンに「一括請求合計」があるか確認
+                has_bulk = any(opt["text"] == "一括請求合計" for opt in options)
+                if not has_bulk:
+                    log.warning(
+                        f"  このdアカウントのドロップダウンに「一括請求合計」がありません。\n"
+                        f"  一括請求は代表回線のdアカウントでのみダウンロードできます。\n"
+                        f"  この回線 {phone} では利用内訳（個別）をダウンロードします。"
+                    )
+                    # フォールバック: 個別回線のダウンロードに切り替え
+                    selected = False
+                    for opt in options:
+                        digits = re.sub(r'\D', '', opt["text"])
+                        if phone in digits or digits in phone:
+                            line_select.select_option(value=opt["value"])
+                            log.info(f"  個別回線にフォールバック: {opt['text']}")
+                            selected = True
+                            break
+                    if not selected:
+                        log.error(f"  電話番号 {phone} にマッチする回線もドロップダウンにありません")
+                        return None
+                else:
+                    line_select.select_option(value="0")
+                    log.info("  「一括請求合計」を選択しました")
             time.sleep(1)
         else:
             log.error(f"  回線ドロップダウンが見つかりません（select数: {selects.count()}）")
