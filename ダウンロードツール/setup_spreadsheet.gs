@@ -9,6 +9,7 @@
  *     Ymobileリンク  ... 同上
  *     auリンク       ... 同上
  *     UQmobileリンク ... 同上
+ *     docomoリンク   ... 同上
  *   回線管理スプレッドシート（別スプレッドシート）:
  *     月別シート     ... 電話番号・解約済・運用端末等の管理データ
  *
@@ -31,6 +32,7 @@ const SOFTBANK_LINK_SHEET_NAME = "SoftBankリンク";
 const YMOBILE_LINK_SHEET_NAME = "Ymobileリンク";
 const AU_LINK_SHEET_NAME = "auリンク";
 const UQMOBILE_LINK_SHEET_NAME = "UQmobileリンク";
+const DOCOMO_LINK_SHEET_NAME = "docomoリンク";
 
 const HISTORY_SHEET_NAME = "ダウンロード履歴";
 const MONTH_COL_START = 3; // リンクシートの月列開始位置（C列）
@@ -57,6 +59,13 @@ const AU_PDF_TYPE_OPTIONS = [
   "請求書,領収書,支払証明書",
 ];
 
+// docomo 用
+const DOCOMO_PDF_TYPE_OPTIONS = [
+  "適格請求書",
+  "利用内訳",
+  "適格請求書,利用内訳",
+];
+
 
 // ────────────────────────────────────────────────
 //  初期セットアップ
@@ -71,6 +80,7 @@ function setupSheet() {
   setupLinkSheet_(ss, YMOBILE_LINK_SHEET_NAME, "Ymobile");
   setupLinkSheet_(ss, AU_LINK_SHEET_NAME, "au");
   setupLinkSheet_(ss, UQMOBILE_LINK_SHEET_NAME, "UQmobile");
+  setupLinkSheet_(ss, DOCOMO_LINK_SHEET_NAME, "docomo");
   setupHistorySheet_(ss);
 
   SpreadsheetApp.getUi().alert(
@@ -110,6 +120,8 @@ function setupSettingsSheet_(ss) {
     "au / UQ mobile 共通のログインパスワード。");
   _upsertSettingRow_(sheet, "au暗証番号", "",
     "au / UQ mobile の4桁暗証番号（請求書閲覧時に必要な場合あり）。", true);
+  _upsertSettingRow_(sheet, "dアカウントパスワード", "",
+    "docomo のdアカウントパスワード。");
   _upsertSettingRow_(sheet, "対象月", "自動（前月）",
     "ダウンロードする月。「自動（前月）」= 実行時の前月。");
   _setTargetMonthValidation_(sheet);
@@ -123,7 +135,7 @@ function setupSettingsSheet_(ss) {
  * - 運用端末はサイドバー保存時に回線管理スプレッドシートから自動設定
  * - 状態列: 有効回線は「契約中」、解約済回線は「解約済」と表示
  * - ログインID列: 回線管理スプレッドシートの「ID」列から自動設定
- *   SoftBank/Ymobile → SoftBank ID、au/UQ → au ID
+ *   SoftBank/Ymobile → SoftBank ID、au/UQ → au ID、docomo → dアカウントID
  */
 function setupAuthSheet_(ss) {
   let sheet = ss.getSheetByName(AUTH_SHEET_NAME);
@@ -154,11 +166,11 @@ function setupAuthSheet_(ss) {
   const lastRow = Math.max(sheet.getLastRow(), 50);
   const carrierRange = sheet.getRange(2, 2, lastRow - 1, 1);
   carrierRange.setDataValidation(SpreadsheetApp.newDataValidation()
-    .requireValueInList(["SoftBank", "Ymobile", "au", "UQmobile"], true)
+    .requireValueInList(["SoftBank", "Ymobile", "au", "UQmobile", "docomo"], true)
     .setAllowInvalid(false).build());
 
-  // PDFの種類列にドロップダウンを設定（SB/YM用 + au/UQ用を結合）
-  const allPdfTypes = [...PDF_TYPE_OPTIONS, ...AU_PDF_TYPE_OPTIONS];
+  // PDFの種類列にドロップダウンを設定（SB/YM用 + au/UQ用 + docomo用を結合）
+  const allPdfTypes = [...PDF_TYPE_OPTIONS, ...AU_PDF_TYPE_OPTIONS, ...DOCOMO_PDF_TYPE_OPTIONS];
   const pdfTypeRange = sheet.getRange(2, 3, lastRow - 1, 1);
   pdfTypeRange.setDataValidation(SpreadsheetApp.newDataValidation()
     .requireValueInList(allPdfTypes, true)
@@ -234,6 +246,7 @@ function _getPhoneManagerHtml_() {
   .tab-btn[data-carrier="Ymobile"].active { background: #FF6D00; }
   .tab-btn[data-carrier="au"].active { background: #E94E1B; }
   .tab-btn[data-carrier="UQmobile"].active { background: #0068B7; }
+  .tab-btn[data-carrier="docomo"].active { background: #CC0033; }
   .phone-list { max-height: 55vh; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 4px; }
   .phone-item {
     display: flex; align-items: center; gap: 8px; padding: 6px 8px;
@@ -266,6 +279,7 @@ function _getPhoneManagerHtml_() {
     <button class="tab-btn" data-carrier="Ymobile" onclick="switchTab('Ymobile')">Y!mobile</button>
     <button class="tab-btn" data-carrier="au" onclick="switchTab('au')">au</button>
     <button class="tab-btn" data-carrier="UQmobile" onclick="switchTab('UQmobile')">UQ mobile</button>
+    <button class="tab-btn" data-carrier="docomo" onclick="switchTab('docomo')">docomo</button>
   </div>
   <div id="targetMonth" class="summary" style="font-weight:bold; margin-bottom:4px;"></div>
   <div id="status" class="status"></div>
@@ -280,8 +294,11 @@ function _getPhoneManagerHtml_() {
 <script>
   const PDF_TYPES = ${JSON.stringify(PDF_TYPE_OPTIONS)};
   const AU_PDF_TYPES = ${JSON.stringify(AU_PDF_TYPE_OPTIONS)};
+  const DOCOMO_PDF_TYPES = ${JSON.stringify(DOCOMO_PDF_TYPE_OPTIONS)};
   function getPdfTypesForCarrier(c) {
-    return (c === "au" || c === "UQmobile") ? AU_PDF_TYPES : PDF_TYPES;
+    if (c === "au" || c === "UQmobile") return AU_PDF_TYPES;
+    if (c === "docomo") return DOCOMO_PDF_TYPES;
+    return PDF_TYPES;
   }
   let currentCarrier = "SoftBank";
   let phoneData = {};
@@ -301,12 +318,12 @@ function _getPhoneManagerHtml_() {
         var savedSelections = r.selections;
         document.getElementById("targetMonth").textContent = "対象月: " + (r.targetMonth || "");
         // 全番号を初期選択（既存の選択があればPDFの種類を復元）
-        selections = { SoftBank: {}, Ymobile: {}, au: {}, UQmobile: {} };
-        ["SoftBank", "Ymobile", "au", "UQmobile"].forEach(function(c) {
+        selections = { SoftBank: {}, Ymobile: {}, au: {}, UQmobile: {}, docomo: {} };
+        ["SoftBank", "Ymobile", "au", "UQmobile", "docomo"].forEach(function(c) {
           var phones = phoneData[c] || [];
           var saved = savedSelections[c] || {};
           phones.forEach(function(p) {
-            var defaultPdfType = (c === "au" || c === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
+            var defaultPdfType = (c === "docomo") ? "適格請求書" : (c === "au" || c === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
             selections[c][p.phone] = { pdfType: (saved[p.phone] && saved[p.phone].pdfType) || defaultPdfType };
           });
         });
@@ -338,7 +355,7 @@ function _getPhoneManagerHtml_() {
     var html = "";
     phones.forEach(function(p) {
       var checked = sel[p.phone] ? "checked" : "";
-      var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
+      var defaultPdfType = (currentCarrier === "docomo") ? "適格請求書" : (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
       var pdfType = (sel[p.phone] && sel[p.phone].pdfType) || defaultPdfType;
       var label = p.device ? p.phone + " (" + p.device + ")" : p.phone;
       if (p.cancelled) label += "（解約済）";
@@ -363,7 +380,7 @@ function _getPhoneManagerHtml_() {
     if (!selections[currentCarrier]) selections[currentCarrier] = {};
     if (el.checked) {
       var selEl = el.parentElement.querySelector("select");
-      var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
+      var defaultPdfType = (currentCarrier === "docomo") ? "適格請求書" : (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
       selections[currentCarrier][el.dataset.phone] = { pdfType: selEl ? selEl.value : defaultPdfType };
     } else {
       delete selections[currentCarrier][el.dataset.phone];
@@ -385,7 +402,7 @@ function _getPhoneManagerHtml_() {
     if (allChecked) {
       phones.forEach(function(p) { delete selections[currentCarrier][p.phone]; });
     } else {
-      var defaultPdfType = (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
+      var defaultPdfType = (currentCarrier === "docomo") ? "適格請求書" : (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
       phones.forEach(function(p) {
         if (!selections[currentCarrier][p.phone])
           selections[currentCarrier][p.phone] = { pdfType: defaultPdfType };
@@ -399,7 +416,8 @@ function _getPhoneManagerHtml_() {
       "選択中: SoftBank " + Object.keys(selections["SoftBank"] || {}).length +
       " / Ymobile " + Object.keys(selections["Ymobile"] || {}).length +
       " / au " + Object.keys(selections["au"] || {}).length +
-      " / UQ " + Object.keys(selections["UQmobile"] || {}).length;
+      " / UQ " + Object.keys(selections["UQmobile"] || {}).length +
+      " / docomo " + Object.keys(selections["docomo"] || {}).length;
   }
 
   function reload() {
@@ -457,7 +475,7 @@ function savePhoneSelections(selections) {
     // 解約済番号セット・運用端末・名義マップ
     const cancelledSet = new Set();
     const deviceMap = {}, nameMap = {}, loginIdMap = {};
-    const ALL_CARRIERS = ["SoftBank", "Ymobile", "au", "UQmobile"];
+    const ALL_CARRIERS = ["SoftBank", "Ymobile", "au", "UQmobile", "docomo"];
     for (const carrier of ALL_CARRIERS) {
       for (const p of (allPhones[carrier] || [])) {
         if (p.cancelled) cancelledSet.add(p.phone);
@@ -491,12 +509,12 @@ function savePhoneSelections(selections) {
     // 選択中の番号（契約中・解約済を分離）
     const activeRows = [];
     const cancelledSelectedRows = [];
-    const linkData = { SoftBank: [], Ymobile: [], au: [], UQmobile: [] };
+    const linkData = { SoftBank: [], Ymobile: [], au: [], UQmobile: [], docomo: [] };
 
     for (const carrier of ALL_CARRIERS) {
       const sel = selections[carrier] || {};
       for (const phone of Object.keys(sel)) {
-        const defaultPdfType = (carrier === "au" || carrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
+        const defaultPdfType = (carrier === "docomo") ? "適格請求書" : (carrier === "au" || carrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
         const pdfType = sel[phone].pdfType || defaultPdfType;
         const status = cancelledSet.has(phone) ? "解約済" : "契約中";
         if (status === "解約済") {
@@ -540,6 +558,7 @@ function savePhoneSelections(selections) {
     _syncLinkSheetPhones_(ss, YMOBILE_LINK_SHEET_NAME, linkData.Ymobile, cancelledSet);
     _syncLinkSheetPhones_(ss, AU_LINK_SHEET_NAME, linkData.au, cancelledSet);
     _syncLinkSheetPhones_(ss, UQMOBILE_LINK_SHEET_NAME, linkData.UQmobile, cancelledSet);
+    _syncLinkSheetPhones_(ss, DOCOMO_LINK_SHEET_NAME, linkData.docomo, cancelledSet);
 
     Logger.log(`[save] 書き込み: active=${activeRows.length}, cancelled=${cancelledSelectedRows.length}, total=${allRows.length}`);
     let msg = `保存しました（契約中${activeRows.length}件`;
@@ -610,6 +629,7 @@ function _normalizeCarrierName_(text) {
   if (s === "ymobile" || s === "y!mobile" || s.includes("ワイモバイル")) return "Ymobile";
   if (s === "au" || s.includes("エーユー") || s === "kddi") return "au";
   if (s === "uqmobile" || s === "uq mobile" || s === "uq" || s.includes("ユーキュー")) return "UQmobile";
+  if (s === "docomo" || s === "nttdocomo" || s.includes("ドコモ")) return "docomo";
   return null;
 }
 
@@ -644,7 +664,7 @@ function _getTargetMonth_() {
  * セクション分け構造に対応（キャリアラベル行 → ヘッダー行 → データ行）。
  */
 function _getAllPhonesFromMonthSheets_() {
-  const result = { SoftBank: [], Ymobile: [], au: [], UQmobile: [] };
+  const result = { SoftBank: [], Ymobile: [], au: [], UQmobile: [], docomo: [] };
 
   let ss;
   const mgmtUrl = _getSettingValue_("回線管理スプレッドシート");
@@ -736,7 +756,7 @@ function _detectCarrierLabel_(row) {
 function _getCurrentSelections_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(AUTH_SHEET_NAME);
-  const result = { SoftBank: {}, Ymobile: {}, au: {}, UQmobile: {} };
+  const result = { SoftBank: {}, Ymobile: {}, au: {}, UQmobile: {}, docomo: {} };
   if (!sheet || sheet.getLastRow() <= 1) return result;
 
   const data = sheet.getDataRange().getValues();
@@ -772,10 +792,12 @@ function updateSoftBankLinks()      { _updatePdfLinks_(SOFTBANK_LINK_SHEET_NAME,
 function updateYmobileLinks()       { _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile"); }
 function updateAuLinks()            { _updatePdfLinks_(AU_LINK_SHEET_NAME, "au"); }
 function updateUQmobileLinks()      { _updatePdfLinks_(UQMOBILE_LINK_SHEET_NAME, "UQmobile"); }
+function updateDocomoLinks()        { _updatePdfLinks_(DOCOMO_LINK_SHEET_NAME, "docomo"); }
 function forceUpdateSoftBankLinks() { _updatePdfLinks_(SOFTBANK_LINK_SHEET_NAME, "SoftBank", false, true); }
 function forceUpdateYmobileLinks()  { _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile", false, true); }
 function forceUpdateAuLinks()       { _updatePdfLinks_(AU_LINK_SHEET_NAME, "au", false, true); }
 function forceUpdateUQmobileLinks() { _updatePdfLinks_(UQMOBILE_LINK_SHEET_NAME, "UQmobile", false, true); }
+function forceUpdateDocomoLinks()   { _updatePdfLinks_(DOCOMO_LINK_SHEET_NAME, "docomo", false, true); }
 
 function updateAllLinks()      { _runAllLinkUpdates_(false); }
 function forceUpdateAllLinks() { _runAllLinkUpdates_(true); }
@@ -785,7 +807,8 @@ function _runAllLinkUpdates_(force) {
   const ym = _updatePdfLinks_(YMOBILE_LINK_SHEET_NAME, "Ymobile", true, force);
   const au = _updatePdfLinks_(AU_LINK_SHEET_NAME, "au", true, force);
   const uq = _updatePdfLinks_(UQMOBILE_LINK_SHEET_NAME, "UQmobile", true, force);
-  const totals = [sb, ym, au, uq];
+  const dc = _updatePdfLinks_(DOCOMO_LINK_SHEET_NAME, "docomo", true, force);
+  const totals = [sb, ym, au, uq, dc];
   _showLinkUpdateResult_(
     totals.reduce((s, r) => s + (r.pdfs || 0), 0),
     totals.reduce((s, r) => s + (r.added || 0), 0),
@@ -905,14 +928,16 @@ function scanAndUpdateSoftBankAmounts() { _scanAndUpdatePdfAmounts_(SOFTBANK_LIN
 function scanAndUpdateYmobileAmounts() { _scanAndUpdatePdfAmounts_(YMOBILE_LINK_SHEET_NAME, "Ymobile"); }
 function scanAndUpdateAuAmounts() { _scanAndUpdatePdfAmounts_(AU_LINK_SHEET_NAME, "au"); }
 function scanAndUpdateUQmobileAmounts() { _scanAndUpdatePdfAmounts_(UQMOBILE_LINK_SHEET_NAME, "UQmobile"); }
+function scanAndUpdateDocomoAmounts() { _scanAndUpdatePdfAmounts_(DOCOMO_LINK_SHEET_NAME, "docomo"); }
 function scanAndUpdateAllAmounts() {
   const sb = _scanAndUpdatePdfAmounts_(SOFTBANK_LINK_SHEET_NAME, "SoftBank", true);
   const ym = _scanAndUpdatePdfAmounts_(YMOBILE_LINK_SHEET_NAME, "Ymobile", true);
   const au = _scanAndUpdatePdfAmounts_(AU_LINK_SHEET_NAME, "au", true);
   const uq = _scanAndUpdatePdfAmounts_(UQMOBILE_LINK_SHEET_NAME, "UQmobile", true);
-  const total = (sb.total || 0) + (ym.total || 0) + (au.total || 0) + (uq.total || 0);
-  const updated = (sb.updated || 0) + (ym.updated || 0) + (au.updated || 0) + (uq.updated || 0);
-  const failed = (sb.failed || 0) + (ym.failed || 0) + (au.failed || 0) + (uq.failed || 0);
+  const dc = _scanAndUpdatePdfAmounts_(DOCOMO_LINK_SHEET_NAME, "docomo", true);
+  const total = (sb.total || 0) + (ym.total || 0) + (au.total || 0) + (uq.total || 0) + (dc.total || 0);
+  const updated = (sb.updated || 0) + (ym.updated || 0) + (au.updated || 0) + (uq.updated || 0) + (dc.updated || 0);
+  const failed = (sb.failed || 0) + (ym.failed || 0) + (au.failed || 0) + (uq.failed || 0) + (dc.failed || 0);
   if (total === 0) {
     SpreadsheetApp.getUi().alert("情報", "金額が未取得のPDFはありませんでした。", SpreadsheetApp.getUi().ButtonSet.OK);
   } else {
@@ -1206,12 +1231,14 @@ function onOpen() {
     .addItem("Ymobileのみ", "updateYmobileLinks")
     .addItem("auのみ", "updateAuLinks")
     .addItem("UQmobileのみ", "updateUQmobileLinks")
+    .addItem("docomoのみ", "updateDocomoLinks")
     .addSeparator()
     .addItem("全キャリア一括（強制上書き）", "forceUpdateAllLinks")
     .addItem("SoftBankのみ（強制上書き）", "forceUpdateSoftBankLinks")
     .addItem("Ymobileのみ（強制上書き）", "forceUpdateYmobileLinks")
     .addItem("auのみ（強制上書き）", "forceUpdateAuLinks")
-    .addItem("UQmobileのみ（強制上書き）", "forceUpdateUQmobileLinks");
+    .addItem("UQmobileのみ（強制上書き）", "forceUpdateUQmobileLinks")
+    .addItem("docomoのみ（強制上書き）", "forceUpdateDocomoLinks");
 
   // 金額取得・ファイル名更新はPythonのダウンロード時に自動取得するためGASメニューから削除
   // au/UQのまとめ請求PDFはOCRでの個別金額取得が不正確なため、Pythonのページ取得に一本化
