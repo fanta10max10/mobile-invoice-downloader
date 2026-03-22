@@ -145,8 +145,8 @@ def parse_pdf_types(raw: str, carrier_family: str = "softbank") -> set[str]:
         valid = {"請求書", "領収書", "支払証明書"}
         default = {"請求書", "支払証明書"}
     elif carrier_family == "docomo":
-        valid = {"利用内訳", "適格請求書"}
-        default = {"適格請求書"}
+        valid = {"利用内訳"}
+        default = {"利用内訳"}
     else:
         valid = {"電話番号別", "一括", "機種別"}
         default = {"電話番号別"}
@@ -2638,13 +2638,13 @@ def _au_download_pdf_from_page(
 def _is_on_docomo_auth_page(ctx: BillingContext, page) -> bool:
     """docomo の認証ページ上にいるか判定する"""
     url = page.url
-    return "id.smt.docomo.ne.jp" in url
+    return "id.smt.docomo.ne.jp" in url or "cfg.smt.docomo.ne.jp" in url
 
 
 def _do_docomo_login_and_navigate(ctx: BillingContext, page, phone_number: str, password: str) -> bool:
     """dアカウントでログイン → My docomo料金ページまで遷移する。"""
 
-    # Step 1: My docomoの料金ページにアクセス（未認証ならdアカウントログインにリダイレクト）
+    # Step 1: My docomoの料金ページにアクセス
     billing_url = "https://www.docomo.ne.jp/mydocomo/payment/"
     log.info("My docomo料金ページにアクセス中...")
     retry_with_backoff(
@@ -2655,7 +2655,30 @@ def _do_docomo_login_and_navigate(ctx: BillingContext, page, phone_number: str, 
     time.sleep(2)
     log.info(f"  現在のURL: {page.url}")
 
+    # My docomoの料金ページに「ログインする」ボタンがある場合（未認証時）
     if not _is_on_docomo_auth_page(ctx, page):
+        login_link = page.get_by_text("ログインする", exact=True)
+        try:
+            if login_link.is_visible(timeout=3000):
+                log.info("  「ログインする」ボタンをクリック")
+                login_link.click()
+                page.wait_for_load_state("networkidle")
+                time.sleep(3)
+                log.info(f"  リダイレクト先URL: {page.url}")
+        except Exception:
+            pass
+
+    # 認証ページにいない場合 → 既にログイン済み
+    if not _is_on_docomo_auth_page(ctx, page):
+        # ログイン済みかどうかをページ内容で判断
+        page_text = _get_page_text(page)[:500]
+        if "ご利用額" in page_text or "合計" in page_text or "内訳" in page_text:
+            log.info("  認証済みのためログインをスキップ")
+            return True
+        # まだ料金ページに「ログインする」ボタンがある場合は未認証
+        if "ログインする" in page_text:
+            log.error("  My docomo料金ページへのログインに失敗しました")
+            return False
         log.info("  認証済みのためログインをスキップ")
         return True
 
@@ -2669,8 +2692,8 @@ def _do_docomo_login_and_navigate(ctx: BillingContext, page, phone_number: str, 
     try:
         # dアカウントID入力
         id_input = (
-            page.locator('#di_uid')
-            .or_(page.locator('input[name="authid"]'))
+            page.locator('input[name="authid"]')
+            .or_(page.locator('#di_uid'))
             .or_(page.locator('input[name="Di_Uid"]'))
             .or_(page.locator('input[type="text"]').first)
         )
@@ -2680,39 +2703,52 @@ def _do_docomo_login_and_navigate(ctx: BillingContext, page, phone_number: str, 
 
         # 「次へ」ボタンをクリック（dアカウントは2ステップ: ID → パスワード）
         next_btn = (
-            page.locator('#di_btn_next')
+            page.locator('#daa_b_sdi001_sp_002')
             .or_(page.get_by_text("次へ", exact=True))
+            .or_(page.locator('#di_btn_next'))
             .or_(page.locator('input[type="submit"]'))
         )
         _click_any_button(page, next_btn, "次へボタン", text_hint="次へ")
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)
-        log.info(f"  「次へ」クリック後のURL: {page.url}")
-
-        # パスワード入力
-        pw_input = (
-            page.locator('#di_pass')
-            .or_(page.locator('input[name="pw"]'))
-            .or_(page.locator('input[type="password"]'))
-        )
-        pw_input.first.wait_for(state="visible", timeout=10000)
-        pw_input.first.fill(password)
-        log.info("  パスワードを入力しました")
-
-        # ログインボタンクリック
-        login_btn = (
-            page.locator('#di_btn_login')
-            .or_(page.get_by_role("button", name=re.compile(r"ログイン")))
-            .or_(page.locator('input[type="submit"]'))
-            .or_(page.locator('button[type="submit"]'))
-        )
-        _click_any_button(page, login_btn, "ログインボタン", text_hint="ログイン")
-
         try:
             page.wait_for_load_state("networkidle", timeout=15000)
         except Exception:
             pass
         time.sleep(3)
+        log.info(f"  「次へ」クリック後のURL: {page.url}")
+
+        # パスワード入力
+        pw_input = (
+            page.locator('input[type="password"]')
+            .or_(page.locator('input[name="pw"]'))
+            .or_(page.locator('#di_pass'))
+        )
+        pw_input.first.wait_for(state="visible", timeout=10000)
+        pw_input.first.fill(password)
+        log.info("  パスワードを入力しました")
+
+        # ログインボタンクリック（dアカウントのボタンはJS制御のため直接クリック）
+        clicked = False
+        try:
+            login_btn_id = page.locator('#daa_b_spw001_sp_002')
+            if login_btn_id.is_visible(timeout=3000):
+                login_btn_id.click()
+                clicked = True
+                log.info("  ログインボタンをクリックしました (ID)")
+        except Exception:
+            pass
+        if not clicked:
+            login_btn = (
+                page.get_by_role("button", name=re.compile(r"^ログイン$"))
+                .or_(page.get_by_text("ログイン", exact=True))
+                .or_(page.locator('button[type="submit"]'))
+            )
+            _click_any_button(page, login_btn, "ログインボタン", text_hint="ログイン")
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        time.sleep(5)
         log.info(f"  ログイン後のURL: {page.url}")
 
     except (PlaywrightTimeout, Exception) as e:
@@ -2735,20 +2771,19 @@ def _do_docomo_login_and_navigate(ctx: BillingContext, page, phone_number: str, 
                 log.error(f"  dアカウントID '{login_id}' またはパスワードが正しいか確認してください。")
                 return False
 
-    # Step 3: 2段階認証（SMS確認コード）
+    # Step 3: 2段階認証（SMSセキュリティコード）
     if _is_on_docomo_auth_page(ctx, page):
         page_text = _get_page_text(page)
-        if "セキュリティコード" in page_text or "確認コード" in page_text or "2段階認証" in page_text:
+        if "セキュリティコード" in page_text or "2段階認証" in page_text or "確認コード" in page_text:
             log.info("  dアカウント 2段階認証を検出しました")
             if not _handle_docomo_2fa(ctx, page, phone_number):
                 return False
         else:
             # それでも認証ページにいる場合（パスキー要求など）
             log.info("  dアカウント認証ページにいます。手動認証が必要な可能性があります")
-            log.info("  SMSまたはメールに届いた確認コードを入力してください")
             try:
                 page.wait_for_url(
-                    lambda url: "id.smt.docomo.ne.jp" not in url,
+                    lambda url: "smt.docomo.ne.jp" not in url,
                     timeout=ctx.security_code_timeout * 1000,
                 )
                 log.info(f"  認証完了: {page.url}")
@@ -2765,10 +2800,14 @@ def _do_docomo_login_and_navigate(ctx: BillingContext, page, phone_number: str, 
         return False
 
     # 料金ページ以外にいる場合、料金ページへ遷移
-    if "mydocomo/payment" not in page.url and "料金" not in _get_page_text(page)[:200]:
+    # mydocomo.docomo.ne.jp がログイン後のリダイレクト先
+    page_text = _get_page_text(page)[:500]
+    if "mydocomo" not in page.url and "ご利用" not in page_text:
         log.info("  料金ページへ遷移中...")
         try:
-            page.goto(billing_url, wait_until="networkidle")
+            # ログイン後はmydocomo.docomo.ne.jpに遷移される場合がある
+            mydocomo_url = "https://mydocomo.docomo.ne.jp/"
+            page.goto(mydocomo_url, wait_until="networkidle")
             time.sleep(2)
         except Exception as e:
             log.error(f"  料金ページへの遷移に失敗: {e}")
@@ -2779,57 +2818,16 @@ def _do_docomo_login_and_navigate(ctx: BillingContext, page, phone_number: str, 
 
 
 def _handle_docomo_2fa(ctx: BillingContext, page, phone_number: str) -> bool:
-    """docomo 2段階認証のセキュリティコード入力を処理する。"""
+    """docomo 2段階認証のセキュリティコード入力を処理する。
+    dアカウントの2FAは6桁のコードを1文字ずつ6個のinput[maxlength=6]に入力する形式。
+    最初のinputに全桁を入力すると自動で分配される（またはJSで1文字ずつ入力）。
+    """
     for attempt in range(8):
         if not _is_on_docomo_auth_page(ctx, page):
             log.info("  dアカウント 2段階認証完了")
             return True
 
-        # 確認コード入力欄を検出
-        code_input = (
-            page.locator('#Di_Otp')
-            .or_(page.locator('input[name="otp"]'))
-            .or_(page.locator('input[name="securityCode"]'))
-            .or_(page.locator('input[maxlength="6"]'))
-        )
-        try:
-            if code_input.first.is_visible(timeout=3000):
-                code = ask_security_code(ctx, phone_number)
-                if not code:
-                    return False
-                code_input.first.fill(code)
-                log.info("  確認コードを入力しました")
-
-                # 送信ボタンをクリック
-                before_url = page.url
-                submit_btn = (
-                    page.locator('#di_btn_otp_auth')
-                    .or_(page.get_by_text("ログイン", exact=False))
-                    .or_(page.get_by_text("確認する", exact=False))
-                    .or_(page.locator('input[type="submit"]'))
-                    .or_(page.locator('button[type="submit"]'))
-                )
-                _click_any_button(page, submit_btn, "確認コード送信ボタン")
-
-                try:
-                    page.wait_for_load_state("networkidle", timeout=15000)
-                except Exception:
-                    pass
-                time.sleep(3)
-
-                if page.url != before_url or not _is_on_docomo_auth_page(ctx, page):
-                    log.info(f"  2段階認証後のURL: {page.url}")
-                    if not _is_on_docomo_auth_page(ctx, page):
-                        return True
-                else:
-                    page_text = _get_page_text(page)
-                    if "正しくありません" in page_text or "無効" in page_text or "エラー" in page_text:
-                        log.warning("  確認コードが正しくありません。再入力してください")
-                        continue
-        except Exception as e:
-            log.warning(f"  2段階認証処理中にエラー: {e}")
-
-        # 「このブラウザを信頼する」確認が出る場合
+        # 「このブラウザを信頼する」確認が出る場合（2FA前に出ることもある）
         try:
             trust_btn = page.get_by_text("信頼する", exact=False).or_(
                 page.get_by_text("今回は設定しない", exact=False)
@@ -2841,8 +2839,54 @@ def _handle_docomo_2fa(ctx: BillingContext, page, phone_number: str) -> bool:
                 log.info("  ブラウザ信頼設定をスキップしました")
                 if not _is_on_docomo_auth_page(ctx, page):
                     return True
+                continue
         except Exception:
             pass
+
+        # セキュリティコード入力欄を検出（6個の1文字入力欄）
+        code_inputs = page.locator('input[maxlength="6"][type="text"]')
+        try:
+            if code_inputs.count() > 0 and code_inputs.first.is_visible(timeout=3000):
+                code = ask_security_code(ctx, phone_number)
+                if not code:
+                    return False
+
+                # 方法1: 最初のinputにフォーカスしてキーボードで1文字ずつ入力
+                code_inputs.first.click()
+                time.sleep(0.3)
+                for digit in code:
+                    page.keyboard.press(digit)
+                    time.sleep(0.1)
+                log.info("  セキュリティコードを入力しました")
+
+                # 「次へ」ボタンをクリック
+                before_url = page.url
+                submit_btn = (
+                    page.get_by_text("次へ", exact=True)
+                    .or_(page.get_by_text("ログイン", exact=True))
+                    .or_(page.locator('button[type="submit"]'))
+                    .or_(page.locator('input[type="submit"]'))
+                )
+                _click_any_button(page, submit_btn, "次へボタン", text_hint="次へ")
+
+                try:
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    pass
+                time.sleep(5)
+
+                if not _is_on_docomo_auth_page(ctx, page):
+                    log.info(f"  2段階認証完了: {page.url}")
+                    return True
+
+                page_text = _get_page_text(page)
+                if "正しくありません" in page_text or "無効" in page_text or "エラー" in page_text:
+                    log.warning("  セキュリティコードが正しくありません。再入力してください")
+                    continue
+                # まだ認証ページにいるが別の理由の場合
+                log.info(f"  2段階認証後もまだ認証ページ: {page.url}")
+        except Exception as e:
+            log.warning(f"  2段階認証処理中にエラー: {e}")
 
     log.error("  dアカウント 2段階認証の試行回数上限に達しました")
     return False

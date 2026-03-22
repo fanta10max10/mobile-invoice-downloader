@@ -61,9 +61,7 @@ const AU_PDF_TYPE_OPTIONS = [
 
 // docomo 用
 const DOCOMO_PDF_TYPE_OPTIONS = [
-  "適格請求書",
   "利用内訳",
-  "適格請求書,利用内訳",
 ];
 
 
@@ -237,16 +235,16 @@ function _getPhoneManagerHtml_() {
   body { font-family: "Google Sans", Arial, sans-serif; font-size: 13px; color: #333; padding: 12px; }
   .tab-bar { display: flex; gap: 4px; margin-bottom: 12px; }
   .tab-btn {
-    flex: 1; padding: 8px; border: none; border-radius: 6px 6px 0 0;
+    flex: 1; padding: 8px 4px; border: none; border-radius: 6px 6px 0 0;
     cursor: pointer; font-size: 13px; font-weight: bold;
     background: #e0e0e0; color: #666; transition: all 0.2s;
+    line-height: 1.3;
   }
   .tab-btn.active { color: #fff; }
-  .tab-btn[data-carrier="SoftBank"].active { background: #4285F4; }
-  .tab-btn[data-carrier="Ymobile"].active { background: #FF6D00; }
-  .tab-btn[data-carrier="au"].active { background: #E94E1B; }
-  .tab-btn[data-carrier="UQmobile"].active { background: #0068B7; }
-  .tab-btn[data-carrier="docomo"].active { background: #CC0033; }
+  .tab-btn[data-group="softbank"].active { background: #4285F4; }
+  .tab-btn[data-group="kddi"].active { background: #E94E1B; }
+  .tab-btn[data-group="docomo"].active { background: #CC0033; }
+  .carrier-badge { font-size: 14px; margin-right: 2px; }
   .phone-list { max-height: 55vh; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 4px; }
   .phone-item {
     display: flex; align-items: center; gap: 8px; padding: 6px 8px;
@@ -275,11 +273,9 @@ function _getPhoneManagerHtml_() {
 </head>
 <body>
   <div class="tab-bar">
-    <button class="tab-btn active" data-carrier="SoftBank" onclick="switchTab('SoftBank')">SoftBank</button>
-    <button class="tab-btn" data-carrier="Ymobile" onclick="switchTab('Ymobile')">Y!mobile</button>
-    <button class="tab-btn" data-carrier="au" onclick="switchTab('au')">au</button>
-    <button class="tab-btn" data-carrier="UQmobile" onclick="switchTab('UQmobile')">UQ mobile</button>
-    <button class="tab-btn" data-carrier="docomo" onclick="switchTab('docomo')">docomo</button>
+    <button class="tab-btn active" data-group="softbank" onclick="switchGroup('softbank')">🐶🐱<br>SoftBank系</button>
+    <button class="tab-btn" data-group="kddi" onclick="switchGroup('kddi')">🍊👸<br>KDDI系</button>
+    <button class="tab-btn" data-group="docomo" onclick="switchGroup('docomo')">🍄<br>docomo</button>
   </div>
   <div id="targetMonth" class="summary" style="font-weight:bold; margin-bottom:4px;"></div>
   <div id="status" class="status"></div>
@@ -295,12 +291,23 @@ function _getPhoneManagerHtml_() {
   const PDF_TYPES = ${JSON.stringify(PDF_TYPE_OPTIONS)};
   const AU_PDF_TYPES = ${JSON.stringify(AU_PDF_TYPE_OPTIONS)};
   const DOCOMO_PDF_TYPES = ${JSON.stringify(DOCOMO_PDF_TYPE_OPTIONS)};
+  const CARRIER_ICONS = { SoftBank: "🐶", Ymobile: "🐱", au: "🍊", UQmobile: "👸", docomo: "🍄" };
+  const GROUPS = {
+    softbank: { carriers: ["SoftBank", "Ymobile"], label: "SoftBank系" },
+    kddi:     { carriers: ["au", "UQmobile"],      label: "KDDI系" },
+    docomo:   { carriers: ["docomo"],               label: "docomo" },
+  };
   function getPdfTypesForCarrier(c) {
     if (c === "au" || c === "UQmobile") return AU_PDF_TYPES;
     if (c === "docomo") return DOCOMO_PDF_TYPES;
     return PDF_TYPES;
   }
-  let currentCarrier = "SoftBank";
+  function getDefaultPdfType(c) {
+    if (c === "docomo") return "利用内訳";
+    if (c === "au" || c === "UQmobile") return "請求書,支払証明書";
+    return "電話番号別";
+  }
+  let currentGroup = "softbank";
   let phoneData = {};
   let selections = {};
 
@@ -317,14 +324,12 @@ function _getPhoneManagerHtml_() {
         phoneData = r.phones;
         var savedSelections = r.selections;
         document.getElementById("targetMonth").textContent = "対象月: " + (r.targetMonth || "");
-        // 全番号を初期選択（既存の選択があればPDFの種類を復元）
         selections = { SoftBank: {}, Ymobile: {}, au: {}, UQmobile: {}, docomo: {} };
         ["SoftBank", "Ymobile", "au", "UQmobile", "docomo"].forEach(function(c) {
           var phones = phoneData[c] || [];
           var saved = savedSelections[c] || {};
           phones.forEach(function(p) {
-            var defaultPdfType = (c === "docomo") ? "適格請求書" : (c === "au" || c === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
-            selections[c][p.phone] = { pdfType: (saved[p.phone] && saved[p.phone].pdfType) || defaultPdfType };
+            selections[c][p.phone] = { pdfType: (saved[p.phone] && saved[p.phone].pdfType) || getDefaultPdfType(c) };
           });
         });
         clearStatus();
@@ -334,90 +339,103 @@ function _getPhoneManagerHtml_() {
       .getPhoneManagerData();
   }
 
-  function switchTab(carrier) {
-    currentCarrier = carrier;
+  function switchGroup(group) {
+    currentGroup = group;
     document.querySelectorAll(".tab-btn").forEach(function(b) {
-      b.classList.toggle("active", b.dataset.carrier === carrier);
+      b.classList.toggle("active", b.dataset.group === group);
     });
     render();
   }
 
   function render() {
     var list = document.getElementById("phoneList");
-    var phones = phoneData[currentCarrier] || [];
-    var sel = selections[currentCarrier] || {};
+    var group = GROUPS[currentGroup];
+    var allPhones = [];
+    group.carriers.forEach(function(c) {
+      (phoneData[c] || []).forEach(function(p) {
+        allPhones.push({ phone: p.phone, carrier: c, device: p.device, cancelled: p.cancelled });
+      });
+    });
 
-    if (phones.length === 0) {
-      list.innerHTML = '<div class="empty-msg">' + currentCarrier + ' の電話番号が見つかりません。<br>設定シートの「回線管理スプレッドシート」URLを確認してください。</div>';
+    if (allPhones.length === 0) {
+      list.innerHTML = '<div class="empty-msg">' + group.label + ' の電話番号が見つかりません。<br>設定シートの「回線管理スプレッドシート」URLを確認してください。</div>';
       updateSummary(); return;
     }
 
     var html = "";
-    phones.forEach(function(p) {
+    allPhones.forEach(function(p) {
+      var sel = selections[p.carrier] || {};
       var checked = sel[p.phone] ? "checked" : "";
-      var defaultPdfType = (currentCarrier === "docomo") ? "適格請求書" : (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
-      var pdfType = (sel[p.phone] && sel[p.phone].pdfType) || defaultPdfType;
+      var pdfType = (sel[p.phone] && sel[p.phone].pdfType) || getDefaultPdfType(p.carrier);
+      var icon = CARRIER_ICONS[p.carrier] || "";
       var label = p.device ? p.phone + " (" + p.device + ")" : p.phone;
       if (p.cancelled) label += "（解約済）";
       var itemClass = p.cancelled ? "phone-item cancelled" : "phone-item";
-      var pdfTypes = getPdfTypesForCarrier(currentCarrier);
+      var pdfTypes = getPdfTypesForCarrier(p.carrier);
 
       html += '<div class="' + itemClass + '">'
-        + '<input type="checkbox" data-phone="' + p.phone + '" ' + checked
+        + '<input type="checkbox" data-phone="' + p.phone + '" data-carrier="' + p.carrier + '" ' + checked
         + ' onchange="onCheck(this)">'
-        + '<span class="phone-number">' + label + '</span>'
-        + '<select data-phone="' + p.phone + '" onchange="onPdfType(this)">';
-      pdfTypes.forEach(function(t) {
-        html += '<option' + (t === pdfType ? ' selected' : '') + '>' + t + '</option>';
-      });
-      html += '</select></div>';
+        + '<span class="carrier-badge">' + icon + '</span>'
+        + '<span class="phone-number">' + label + '</span>';
+      if (pdfTypes.length > 1) {
+        html += '<select data-phone="' + p.phone + '" data-carrier="' + p.carrier + '" onchange="onPdfType(this)">';
+        pdfTypes.forEach(function(t) {
+          html += '<option' + (t === pdfType ? ' selected' : '') + '>' + t + '</option>';
+        });
+        html += '</select>';
+      }
+      html += '</div>';
     });
     list.innerHTML = html;
     updateSummary();
   }
 
   function onCheck(el) {
-    if (!selections[currentCarrier]) selections[currentCarrier] = {};
+    var carrier = el.dataset.carrier;
+    if (!selections[carrier]) selections[carrier] = {};
     if (el.checked) {
       var selEl = el.parentElement.querySelector("select");
-      var defaultPdfType = (currentCarrier === "docomo") ? "適格請求書" : (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
-      selections[currentCarrier][el.dataset.phone] = { pdfType: selEl ? selEl.value : defaultPdfType };
+      selections[carrier][el.dataset.phone] = { pdfType: selEl ? selEl.value : getDefaultPdfType(carrier) };
     } else {
-      delete selections[currentCarrier][el.dataset.phone];
+      delete selections[carrier][el.dataset.phone];
     }
     updateSummary();
   }
 
   function onPdfType(el) {
-    if (selections[currentCarrier] && selections[currentCarrier][el.dataset.phone]) {
-      selections[currentCarrier][el.dataset.phone].pdfType = el.value;
+    var carrier = el.dataset.carrier;
+    if (selections[carrier] && selections[carrier][el.dataset.phone]) {
+      selections[carrier][el.dataset.phone].pdfType = el.value;
     }
   }
 
   function toggleAll() {
-    var phones = phoneData[currentCarrier] || [];
-    var sel = selections[currentCarrier] || {};
-    var allChecked = phones.every(function(p) { return sel[p.phone]; });
-    if (!selections[currentCarrier]) selections[currentCarrier] = {};
+    var group = GROUPS[currentGroup];
+    var allPhones = [];
+    group.carriers.forEach(function(c) {
+      (phoneData[c] || []).forEach(function(p) { allPhones.push({ phone: p.phone, carrier: c }); });
+    });
+    var allChecked = allPhones.every(function(p) { return (selections[p.carrier] || {})[p.phone]; });
     if (allChecked) {
-      phones.forEach(function(p) { delete selections[currentCarrier][p.phone]; });
+      allPhones.forEach(function(p) { if (selections[p.carrier]) delete selections[p.carrier][p.phone]; });
     } else {
-      var defaultPdfType = (currentCarrier === "docomo") ? "適格請求書" : (currentCarrier === "au" || currentCarrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
-      phones.forEach(function(p) {
-        if (!selections[currentCarrier][p.phone])
-          selections[currentCarrier][p.phone] = { pdfType: defaultPdfType };
+      allPhones.forEach(function(p) {
+        if (!selections[p.carrier]) selections[p.carrier] = {};
+        if (!selections[p.carrier][p.phone])
+          selections[p.carrier][p.phone] = { pdfType: getDefaultPdfType(p.carrier) };
       });
     }
     render();
   }
 
   function updateSummary() {
-    document.getElementById("summary").textContent =
-      "選択中: SoftBank " + Object.keys(selections["SoftBank"] || {}).length +
-      " / Ymobile " + Object.keys(selections["Ymobile"] || {}).length +
-      " / au " + Object.keys(selections["au"] || {}).length +
-      " / UQ " + Object.keys(selections["UQmobile"] || {}).length +
-      " / docomo " + Object.keys(selections["docomo"] || {}).length;
+    var counts = [];
+    ["SoftBank", "Ymobile", "au", "UQmobile", "docomo"].forEach(function(c) {
+      var n = Object.keys(selections[c] || {}).length;
+      if (n > 0) counts.push(CARRIER_ICONS[c] + " " + n);
+    });
+    document.getElementById("summary").textContent = "選択中: " + (counts.length > 0 ? counts.join(" / ") : "なし");
   }
 
   function reload() {
@@ -514,7 +532,7 @@ function savePhoneSelections(selections) {
     for (const carrier of ALL_CARRIERS) {
       const sel = selections[carrier] || {};
       for (const phone of Object.keys(sel)) {
-        const defaultPdfType = (carrier === "docomo") ? "適格請求書" : (carrier === "au" || carrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
+        const defaultPdfType = (carrier === "docomo") ? "利用内訳" : (carrier === "au" || carrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
         const pdfType = sel[phone].pdfType || defaultPdfType;
         const status = cancelledSet.has(phone) ? "解約済" : "契約中";
         if (status === "解約済") {
