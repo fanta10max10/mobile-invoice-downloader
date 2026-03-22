@@ -339,6 +339,15 @@ function _getPhoneManagerHtml_() {
         var savedSelections = r.selections;
         docomoRepLine = r.docomoRepLine || "";
         document.getElementById("targetMonth").textContent = "対象月: " + (r.targetMonth || "");
+        // docomo代表回線の検証
+        if (docomoRepLine) {
+          var docomoPhones = (phoneData["docomo"] || []).map(function(p) { return p.phone; });
+          if (docomoPhones.length > 0 && docomoPhones.indexOf(docomoRepLine) === -1) {
+            setStatus("⚠️ 設定シートの「docomo代表回線」(" + docomoRepLine + ") がdocomo回線一覧に見つかりません。一括請求がダウンロードされません。", "warn");
+          }
+        } else if ((phoneData["docomo"] || []).length > 0) {
+          setStatus("⚠️ 設定シートの「docomo代表回線」が未設定です。一括請求がダウンロードされません。", "warn");
+        }
         selections = { SoftBank: {}, Ymobile: {}, au: {}, UQmobile: {}, docomo: {} };
         ["SoftBank", "Ymobile", "au", "UQmobile", "docomo"].forEach(function(c) {
           var phones = phoneData[c] || [];

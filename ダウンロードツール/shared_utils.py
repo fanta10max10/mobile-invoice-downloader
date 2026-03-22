@@ -1951,6 +1951,35 @@ def run_main(ctx: BillingContext) -> None:
         log.info(f"{ctx.config.display_name} の対象回線がないためスキップします")
         return
 
+    # docomo代表回線の検証
+    if ctx.config.carrier_family == "docomo" and len(accounts) > 0:
+        try:
+            gc = get_gspread_client()
+            sh = open_sheet(gc, ctx.spreadsheet_id)
+            rep_line = load_password_from_settings(sh, "docomo代表回線")
+            if rep_line:
+                rep_normalized = strip_hyphens(rep_line)
+                docomo_phones = [strip_hyphens(str(r["電話番号"])) for _, r in accounts.iterrows()]
+                if rep_normalized not in docomo_phones:
+                    log.warning(
+                        f"⚠️ 設定シートの「docomo代表回線」({rep_line}) がdocomo回線一覧に見つかりません。\n"
+                        f"  一括請求PDFがダウンロードされません。設定シートを確認してください。"
+                    )
+                else:
+                    log.info(f"  docomo代表回線: {rep_line}")
+            else:
+                has_bulk = any(
+                    "一括請求" in parse_pdf_types(str(r.get("PDFの種類", "")), "docomo")
+                    for _, r in accounts.iterrows()
+                )
+                if has_bulk:
+                    log.warning(
+                        "⚠️ 設定シートの「docomo代表回線」が未設定ですが、一括請求が設定されている回線があります。\n"
+                        "  設定シートに代表回線の電話番号を入力してください。"
+                    )
+        except Exception:
+            pass
+
     if ctx.dry_run:
         log.info("=== ドライランモード（接続テスト） ===")
         log.info(f"  保存先: {save_dir} ({mode_label})")
