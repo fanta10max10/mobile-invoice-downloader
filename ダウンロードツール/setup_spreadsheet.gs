@@ -317,7 +317,7 @@ function _getPhoneManagerHtml_() {
     return PDF_TYPES;
   }
   function getDefaultPdfType(carrier, phone) {
-    if (carrier === "docomo") return (phone === docomoRepLine) ? "一括請求" : "利用内訳";
+    if (carrier === "docomo") return (!docomoRepLine || phone === docomoRepLine) ? "一括請求" : "利用内訳";
     if (carrier === "au" || carrier === "UQmobile") return "請求書,支払証明書";
     return "電話番号別";
   }
@@ -353,7 +353,9 @@ function _getPhoneManagerHtml_() {
           var phones = phoneData[c] || [];
           var saved = savedSelections[c] || {};
           phones.forEach(function(p) {
-            selections[c][p.phone] = { pdfType: (saved[p.phone] && saved[p.phone].pdfType) || getDefaultPdfType(c, p.phone) };
+            // docomo回線は代表回線設定に連動するため、常にデフォルト値を使用
+            var savedPdf = (c !== "docomo" && saved[p.phone]) ? saved[p.phone].pdfType : null;
+            selections[c][p.phone] = { pdfType: savedPdf || getDefaultPdfType(c, p.phone) };
           });
         });
         clearStatus();
@@ -560,7 +562,7 @@ function savePhoneSelections(selections) {
     for (const carrier of ALL_CARRIERS) {
       const sel = selections[carrier] || {};
       for (const phone of Object.keys(sel)) {
-        const defaultPdfType = (carrier === "docomo") ? (phone === docomoRep ? "一括請求" : "利用内訳") : (carrier === "au" || carrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
+        const defaultPdfType = (carrier === "docomo") ? ((!docomoRep || phone === docomoRep) ? "一括請求" : "利用内訳") : (carrier === "au" || carrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
         const pdfType = sel[phone].pdfType || defaultPdfType;
         const status = cancelledSet.has(phone) ? "解約済" : "契約中";
         if (status === "解約済") {
