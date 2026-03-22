@@ -62,6 +62,7 @@ const AU_PDF_TYPE_OPTIONS = [
 // docomo 用
 const DOCOMO_PDF_TYPE_OPTIONS = [
   "利用内訳",
+  "利用内訳(個別)",
 ];
 
 

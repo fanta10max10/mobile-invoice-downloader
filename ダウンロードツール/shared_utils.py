@@ -145,7 +145,7 @@ def parse_pdf_types(raw: str, carrier_family: str = "softbank") -> set[str]:
         valid = {"請求書", "領収書", "支払証明書"}
         default = {"請求書", "支払証明書"}
     elif carrier_family == "docomo":
-        valid = {"利用内訳"}
+        valid = {"利用内訳", "利用内訳(個別)"}
         default = {"利用内訳"}
     else:
         valid = {"電話番号別", "一括", "機種別"}
@@ -995,7 +995,7 @@ def check_already_downloaded(ctx: BillingContext, save_dir: Path, year: str, mon
     # 種類ごとにサフィックスが異なる
     type_suffixes = {"請求書": "", "領収書": "_領収書", "支払証明書": "_支払証明書",
                      "電話番号別": "", "一括": "_一括", "機種別": "_機種別",
-                     "適格請求書": "", "利用内訳": "_利用内訳"}
+                     "利用内訳": "", "利用内訳(個別)": "_個別"}
 
     remaining = set()
     # 電話番号でマッチ（旧・新形式両対応）
@@ -2960,174 +2960,151 @@ def _docomo_download_pdf_from_page(
     ctx: BillingContext, page, save_dir: Path, year: str, month: str, phone: str,
     pdf_types: set[str] | None = None,
 ) -> tuple[bool, list[str]]:
-    """My docomoからPDFをダウンロードする。(成功, ファイル名リスト)を返す。
-    pdf_types: {"適格請求書"}, {"利用内訳"} のいずれか（デフォルト: 適格請求書）
+    """My docomoから利用内訳PDFをダウンロードする。
+    pdf_types:
+      - {"利用内訳"}: 一括請求合計のPDF（デフォルト）
+      - {"利用内訳(個別)"}: 指定電話番号の個別PDF
+    フロー: 料金ページ → 「他の回線の内訳」→ 月選択 → 回線選択 → 表示 → ダウンロード
     """
     if pdf_types is None:
-        pdf_types = {"適格請求書"}
+        pdf_types = {"利用内訳"}
 
     log.info(f"ダウンロード対象: {', '.join(sorted(pdf_types))}")
 
-    any_success = False
-    filenames = []
+    # 個別回線ダウンロードの場合
+    use_individual = "利用内訳(個別)" in pdf_types
 
-    for pdf_type in sorted(pdf_types):
-        log.info(f"{pdf_type}のダウンロードを試みます...")
+    fname = _docomo_download_usage_detail(ctx, page, save_dir, year, month, phone, individual=use_individual)
+    if fname:
+        return (True, [fname])
 
-        if pdf_type == "適格請求書":
-            fname = _docomo_download_invoice(ctx, page, save_dir, year, month, phone)
-            if fname:
-                any_success = True
-                filenames.append(fname)
-        elif pdf_type == "利用内訳":
-            fname = _docomo_download_usage_detail(ctx, page, save_dir, year, month, phone)
-            if fname:
-                any_success = True
-                filenames.append(fname)
-        else:
-            log.warning(f"  不明なPDFの種類: {pdf_type}")
-
-    if not any_success:
-        log.error("指定した種別のPDFがダウンロードできませんでした")
-    return (any_success, filenames)
+    log.error("指定した種別のPDFがダウンロードできませんでした")
+    return (False, [])
 
 
-def _docomo_download_invoice(
+def _docomo_download_usage_detail(
     ctx: BillingContext, page, save_dir: Path, year: str, month: str, phone: str,
+    individual: bool = False,
 ) -> "str | None":
-    """適格請求書（インボイス）をダウンロードする。"""
-    log.info("  適格請求書ダウンロードページへ遷移中...")
+    """My docomoから利用内訳PDFをダウンロードする。
 
-    # 適格請求書ダウンロードページへ遷移
-    # My docomo料金ページから「適格請求書」「インボイス」リンクを探す
-    invoice_links = [
-        "適格請求書",
-        "インボイス",
-        "請求書ダウンロード",
-        "ダウンロード",
-    ]
-    navigated = False
-    for text in invoice_links:
-        try:
-            link = page.get_by_text(text, exact=False).first
-            if link.is_visible(timeout=3000):
-                link.click()
-                page.wait_for_load_state("networkidle")
-                time.sleep(2)
-                log.info(f"  「{text}」をクリック → {page.url}")
-                navigated = True
-                break
-        except Exception:
-            continue
+    individual=False: 一括請求合計のPDF（デフォルト）
+    individual=True:  指定電話番号の個別PDF
 
-    if not navigated:
-        # 直接URLでアクセスを試みる
-        try:
-            page.goto("https://www.docomo.ne.jp/mydocomo/payment/", wait_until="networkidle")
-            time.sleep(2)
-            # 料金ページから適格請求書関連のリンクを再探索
-            for text in invoice_links:
-                try:
-                    link = page.get_by_text(text, exact=False).first
-                    if link.is_visible(timeout=2000):
-                        link.click()
-                        page.wait_for_load_state("networkidle")
-                        time.sleep(2)
-                        navigated = True
-                        break
-                except Exception:
-                    continue
-        except Exception:
-            pass
+    実サイトのフロー:
+    1. 料金ページの「他の回線の内訳」ボタン → 詳細ページへ遷移
+    2. 月タブで対象月を選択
+    3. 回線ドロップダウン(Select[1])で回線を選択
+    4. 「表示」ボタン(root_GKFAGW001SubmitHyoujiPull)をクリック
+    5. 「利用内訳をダウンロードする」リンクをクリック → PDFダウンロード
+    """
+    mode_label = "個別回線" if individual else "一括請求合計"
+    log.info(f"  利用内訳ダウンロード開始...（{mode_label}）")
 
-    if not navigated:
-        log.warning("  適格請求書のリンクが見つかりません")
+    # Step 1: 「他の回線の内訳」ボタンで詳細ページへ遷移
+    try:
+        other_btn = page.get_by_text("他の回線の内訳", exact=False)
+        if other_btn.is_visible(timeout=5000):
+            other_btn.click()
+            time.sleep(5)
+            page.wait_for_load_state("networkidle")
+            log.info(f"  詳細ページへ遷移: {page.url}")
+        else:
+            log.error("  「他の回線の内訳」ボタンが見つかりません")
+            return None
+    except Exception as e:
+        log.error(f"  詳細ページへの遷移に失敗: {e}")
         return None
 
-    # 対象月を選択
-    target_ym = f"{year}{month}"
-    target_label = f"{int(year)}年{int(month)}月"
-    month_selected = False
+    # Step 2: 月タブで対象月を選択
+    # My docomoの月表記は「N月」（例: 2月）で、利用月を表す
+    target_month_label = f"{int(month)}月"
+    try:
+        month_tab = page.get_by_text(target_month_label, exact=True)
+        if month_tab.is_visible(timeout=3000):
+            month_tab.click()
+            time.sleep(3)
+            log.info(f"  月タブを選択: {target_month_label}")
+    except Exception:
+        log.info(f"  月タブ {target_month_label} が見つかりません（デフォルト月を使用）")
 
-    # ラジオボタンで月を選択
-    radios = page.locator('input[type="radio"]')
-    for i in range(radios.count()):
-        radio = radios.nth(i)
-        value = radio.get_attribute("value") or ""
-        label_text = ""
-        try:
-            label_text = radio.evaluate("""el => {
-                const label = el.closest('label') || el.parentElement;
-                return label ? label.textContent.trim() : '';
-            }""")
-        except Exception:
-            pass
-        if target_ym in value or target_label in label_text or f"{int(month)}月" in label_text:
-            radio.check(force=True)
-            log.info(f"  月を選択（ラジオ）: value={value}, label={label_text[:40]}")
-            month_selected = True
-            break
-
-    if not month_selected:
-        # セレクトボックスで月を選択
+    # Step 3: 回線ドロップダウンで回線を選択
+    try:
         selects = page.locator("select")
-        for i in range(selects.count()):
-            sel = selects.nth(i)
-            try:
-                sel.select_option(value=target_ym)
-                month_selected = True
-                log.info(f"  月を選択（セレクト）: {target_ym}")
-                break
-            except Exception:
-                try:
-                    sel.select_option(label=re.compile(f"{int(month)}月"))
-                    month_selected = True
-                    log.info(f"  月を選択（セレクトラベル）: {int(month)}月")
-                    break
-                except Exception:
-                    continue
+        if selects.count() >= 2:
+            line_select = selects.nth(1)
+            if individual:
+                # 個別回線: 電話番号でマッチするoptionを探す
+                phone_formatted = f"{phone[:3]}-{phone[3:7]}-{phone[7:]}" if len(phone) >= 10 else phone
+                options = line_select.evaluate(
+                    "el => Array.from(el.options).map(o => ({value: o.value, text: o.textContent.trim()}))"
+                )
+                selected = False
+                for opt in options:
+                    digits = re.sub(r'\D', '', opt["text"])
+                    if phone in digits or digits in phone:
+                        line_select.select_option(value=opt["value"])
+                        log.info(f"  個別回線を選択: {opt['text']}")
+                        selected = True
+                        break
+                if not selected:
+                    log.error(f"  電話番号 {phone} にマッチする回線がドロップダウンにありません")
+                    return None
+            else:
+                line_select.select_option(value="0")  # 一括請求合計
+                log.info("  「一括請求合計」を選択しました")
+            time.sleep(1)
+        else:
+            log.error(f"  回線ドロップダウンが見つかりません（select数: {selects.count()}）")
+            return None
+    except Exception as e:
+        log.error(f"  回線選択に失敗: {e}")
+        return None
 
-    if not month_selected:
-        log.warning(f"  対象月 {target_label} の選択肢が見つかりません。現在のページでダウンロードを試みます")
+    # Step 4: 「表示」ボタンをクリック
+    try:
+        display_btn = page.locator('input[name="root_GKFAGW001SubmitHyoujiPull"]')
+        if display_btn.is_visible(timeout=3000):
+            display_btn.click()
+            time.sleep(5)
+            page.wait_for_load_state("networkidle")
+            log.info("  「表示」ボタンをクリックしました")
+        else:
+            log.error("  「表示」ボタンが見つかりません")
+            return None
+    except Exception as e:
+        log.error(f"  「表示」ボタンのクリックに失敗: {e}")
+        return None
 
-    # 金額取得を試みる
+    # 金額を取得（一括請求サービス合計額）
     amount = ""
-    try:
-        amount_el = page.locator("text=/[\\d,]+円/").first
-        if amount_el.is_visible(timeout=3000):
-            raw_amount = amount_el.text_content()
-            if raw_amount:
-                amount = sanitize_amount(raw_amount)
-                log.info(f"  請求金額を取得: {amount}")
-    except Exception:
-        pass
+    page_text = _get_page_text(page)
+    m_amount = re.search(r"一括請求サービス合計額\s*([\d,]+)円", page_text)
+    if m_amount:
+        raw = m_amount.group(1).replace(",", "")
+        amount = f"{int(raw)}円"
+        log.info(f"  一括請求合計金額: {amount}")
+    else:
+        # 「◇合計」パターン
+        m_total = re.search(r"◇合計\s*([\d,]+)円", page_text)
+        if m_total:
+            raw = m_total.group(1).replace(",", "")
+            amount = f"{int(raw)}円"
+            log.info(f"  合計金額: {amount}")
 
-    # 同意チェックボックスがある場合
-    try:
-        agree_cb = page.locator('input[type="checkbox"]').first
-        if agree_cb.is_visible(timeout=2000):
-            page_text = _get_page_text(page)
-            if "同意" in page_text or "注意事項" in page_text:
-                if not agree_cb.is_checked():
-                    agree_cb.check(force=True)
-                    log.info("  同意チェックボックスをチェックしました")
-                    time.sleep(1)
-    except Exception:
-        pass
-
-    # ダウンロードボタンをクリック
-    download_btn = (
-        page.get_by_text("ダウンロード", exact=False)
-        .or_(page.get_by_role("button", name=re.compile(r"ダウンロード")))
-        .or_(page.locator('a[href*="download"]'))
-        .or_(page.locator('button:has-text("ダウンロード")'))
-    )
+    # Step 5: 「利用内訳をダウンロードする」リンクをクリック
+    dl_link = page.get_by_text("利用内訳をダウンロードする", exact=True)
 
     for attempt in range(3):
         try:
+            if not dl_link.is_visible(timeout=5000):
+                log.error("  「利用内訳をダウンロードする」リンクが見つかりません")
+                return None
+
             with page.expect_download(timeout=60000) as download_info:
-                _click_any_button(page, download_btn, "ダウンロードボタン", text_hint="ダウンロード")
+                dl_link.click()
             download = download_info.value
+            log.info(f"  ダウンロード完了: {download.suggested_filename}")
 
             filename = build_filename(ctx, year, month, phone, amount)
             dest = save_dir / filename
@@ -3139,128 +3116,6 @@ def _docomo_download_invoice(
                 if pdf_amount:
                     amount = pdf_amount
                     new_filename = build_filename(ctx, year, month, phone, amount)
-                    new_dest = save_dir / new_filename
-                    if not new_dest.exists():
-                        dest.rename(new_dest)
-                        dest = new_dest
-                        log.info(f"  PDFから金額取得・リネーム: {new_filename}")
-
-            final_name = dest.name
-            if ctx.drive_ctx is not None:
-                folder_id = ctx.drive_ctx.get_folder_id(year, month)
-                ok = ctx.drive_ctx.upload(dest, folder_id)
-                try:
-                    dest.unlink()
-                except Exception:
-                    pass
-                return final_name if ok else None
-
-            log.info(f"  [適格請求書] 保存完了: {dest}")
-            return final_name
-
-        except Exception as e:
-            if attempt < 2:
-                log.warning(f"  [適格請求書] ダウンロード失敗 (試行{attempt+1}/3): {e}")
-                time.sleep(2 * (2 ** attempt))
-            else:
-                log.warning(f"  [適格請求書] ダウンロード失敗 (全3回試行): {e}")
-
-    return None
-
-
-def _docomo_download_usage_detail(
-    ctx: BillingContext, page, save_dir: Path, year: str, month: str, phone: str,
-) -> "str | None":
-    """利用内訳PDFをダウンロードする。"""
-    log.info("  利用内訳ダウンロードページへ遷移中...")
-
-    # 利用内訳ページへ遷移
-    detail_url = "https://www.docomo.ne.jp/mydocomo/payment/details/index.html"
-    try:
-        page.goto(detail_url, wait_until="networkidle")
-        time.sleep(2)
-        log.info(f"  利用内訳ページ: {page.url}")
-    except Exception as e:
-        log.error(f"  利用内訳ページへの遷移に失敗: {e}")
-        return None
-
-    # 再認証が必要な場合
-    if _is_on_docomo_auth_page(ctx, page):
-        log.warning("  利用内訳ページで再認証が必要です")
-        return None
-
-    # 対象月を選択
-    target_label = f"{int(year)}年{int(month)}月"
-    try:
-        month_link = page.get_by_text(target_label, exact=False).or_(
-            page.get_by_text(f"{int(month)}月ご利用分", exact=False)
-        )
-        if month_link.first.is_visible(timeout=5000):
-            month_link.first.click()
-            page.wait_for_load_state("networkidle")
-            time.sleep(2)
-            log.info(f"  月を選択: {target_label}")
-    except Exception:
-        log.info(f"  月選択をスキップ（現在の月がデフォルト表示の可能性）")
-
-    # PDFダウンロードリンクを探す
-    pdf_links = [
-        "PDF",
-        "ダウンロード・印刷",
-        "利用内訳のダウンロード",
-    ]
-    for text in pdf_links:
-        try:
-            link = page.get_by_text(text, exact=False).first
-            if link.is_visible(timeout=3000):
-                link.click()
-                page.wait_for_load_state("networkidle")
-                time.sleep(2)
-                log.info(f"  「{text}」をクリック")
-                break
-        except Exception:
-            continue
-
-    # 同意チェックボックスがある場合
-    try:
-        page_text = _get_page_text(page)
-        if "同意" in page_text or "注意事項" in page_text:
-            agree_cb = page.locator('input[type="checkbox"]').first
-            if agree_cb.is_visible(timeout=2000) and not agree_cb.is_checked():
-                agree_cb.check(force=True)
-                log.info("  同意チェックボックスをチェックしました")
-                time.sleep(1)
-    except Exception:
-        pass
-
-    # ダウンロードボタンをクリック
-    download_btn = (
-        page.get_by_text("ダウンロード", exact=False)
-        .or_(page.get_by_role("button", name=re.compile(r"ダウンロード")))
-        .or_(page.locator('a[href*="download"]'))
-    )
-
-    amount = ""
-    for attempt in range(3):
-        try:
-            with page.expect_download(timeout=60000) as download_info:
-                _click_any_button(page, download_btn, "ダウンロードボタン", text_hint="ダウンロード")
-            download = download_info.value
-
-            filename = build_filename(ctx, year, month, phone, amount)
-            # 利用内訳はサフィックスを付ける
-            stem = Path(filename).stem
-            filename = f"{stem}_利用内訳.pdf"
-            dest = save_dir / filename
-            download.save_as(str(dest))
-
-            # PDFから金額取得してリネーム
-            if not amount:
-                pdf_amount = extract_amount_from_pdf(dest)
-                if pdf_amount:
-                    amount = pdf_amount
-                    new_stem = build_filename(ctx, year, month, phone, amount).replace(".pdf", "")
-                    new_filename = f"{new_stem}_利用内訳.pdf"
                     new_dest = save_dir / new_filename
                     if not new_dest.exists():
                         dest.rename(new_dest)
