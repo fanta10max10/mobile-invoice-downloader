@@ -126,7 +126,7 @@ function setupSettingsSheet_(ss) {
   _upsertSettingRow_(sheet, "dアカウントパスワード", "",
     "docomo のdアカウントパスワード。");
   _upsertSettingRow_(sheet, "docomo代表回線", "",
-    "一括請求をダウンロードする代表回線の電話番号（ハイフンなし）。代表回線のみ一括請求PDFをダウンロードできる。");
+    "一括請求をダウンロードする代表回線の電話番号（ハイフンあり可）。代表回線のみ一括請求PDFをダウンロードできる。");
   _upsertSettingRow_(sheet, "対象月", "自動（前月）",
     "ダウンロードする月。「自動（前月）」= 実行時の前月。");
   _setTargetMonthValidation_(sheet);
