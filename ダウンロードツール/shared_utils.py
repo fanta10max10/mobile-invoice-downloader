@@ -145,8 +145,8 @@ def parse_pdf_types(raw: str, carrier_family: str = "softbank") -> set[str]:
         valid = {"請求書", "領収書", "支払証明書"}
         default = {"請求書", "支払証明書"}
     elif carrier_family == "docomo":
-        valid = {"利用内訳", "利用内訳(個別)"}
-        default = {"利用内訳"}
+        valid = {"一括請求", "利用内訳"}
+        default = {"一括請求"}
     else:
         valid = {"電話番号別", "一括", "機種別"}
         default = {"電話番号別"}
@@ -995,7 +995,7 @@ def check_already_downloaded(ctx: BillingContext, save_dir: Path, year: str, mon
     # 種類ごとにサフィックスが異なる
     type_suffixes = {"請求書": "", "領収書": "_領収書", "支払証明書": "_支払証明書",
                      "電話番号別": "", "一括": "_一括", "機種別": "_機種別",
-                     "利用内訳": "", "利用内訳(個別)": "_個別"}
+                     "一括請求": "", "利用内訳": "_利用内訳"}
 
     remaining = set()
     # 電話番号でマッチ（旧・新形式両対応）
@@ -2960,26 +2960,30 @@ def _docomo_download_pdf_from_page(
     ctx: BillingContext, page, save_dir: Path, year: str, month: str, phone: str,
     pdf_types: set[str] | None = None,
 ) -> tuple[bool, list[str]]:
-    """My docomoから利用内訳PDFをダウンロードする。
+    """My docomoからPDFをダウンロードする。
     pdf_types:
-      - {"利用内訳"}: 一括請求合計のPDF（デフォルト）
-      - {"利用内訳(個別)"}: 指定電話番号の個別PDF
+      - {"一括請求"}: 一括請求合計のPDF（デフォルト）
+      - {"利用内訳"}: 指定電話番号の個別利用内訳PDF
     フロー: 料金ページ → 「他の回線の内訳」→ 月選択 → 回線選択 → 表示 → ダウンロード
     """
     if pdf_types is None:
-        pdf_types = {"利用内訳"}
+        pdf_types = {"一括請求"}
 
     log.info(f"ダウンロード対象: {', '.join(sorted(pdf_types))}")
 
-    # 個別回線ダウンロードの場合
-    use_individual = "利用内訳(個別)" in pdf_types
+    any_success = False
+    filenames = []
 
-    fname = _docomo_download_usage_detail(ctx, page, save_dir, year, month, phone, individual=use_individual)
-    if fname:
-        return (True, [fname])
+    for pdf_type in sorted(pdf_types):
+        individual = (pdf_type == "利用内訳")
+        fname = _docomo_download_usage_detail(ctx, page, save_dir, year, month, phone, individual=individual)
+        if fname:
+            any_success = True
+            filenames.append(fname)
 
-    log.error("指定した種別のPDFがダウンロードできませんでした")
-    return (False, [])
+    if not any_success:
+        log.error("指定した種別のPDFがダウンロードできませんでした")
+    return (any_success, filenames)
 
 
 def _docomo_download_usage_detail(

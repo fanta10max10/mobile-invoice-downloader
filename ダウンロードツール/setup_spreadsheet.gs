@@ -61,8 +61,9 @@ const AU_PDF_TYPE_OPTIONS = [
 
 // docomo 用
 const DOCOMO_PDF_TYPE_OPTIONS = [
+  "一括請求",
   "利用内訳",
-  "利用内訳(個別)",
+  "一括請求,利用内訳",
 ];
 
 
@@ -185,8 +186,13 @@ function setupAuthSheet_(ss) {
 function setupLinkSheet_(ss, sheetName, carrierLabel) {
   let sheet = ss.getSheetByName(sheetName);
   if (!sheet) sheet = ss.insertSheet(sheetName);
-  // ヘッダー設定
-  const color = carrierLabel === "SoftBank" ? "#4285F4" : "#FF6D00";
+  // ヘッダー色: キャリアブランドカラー
+  const colorMap = {
+    SoftBank: "#1a1a1a", Ymobile: "#1a1a1a",  // SB系: 黒
+    au: "#E94E1B", UQmobile: "#E94E1B",        // KDDI系: オレンジ
+    docomo: "#CC0033",                          // docomo: 赤
+  };
+  const color = colorMap[carrierLabel] || "#4285F4";
   sheet.getRange(1, 1, 1, 2).setValues([["電話番号", "名義"]])
     .setFontWeight("bold").setBackground(color).setFontColor("#FFFFFF").setHorizontalAlignment("center");
   sheet.setColumnWidth(1, 180);
@@ -242,7 +248,7 @@ function _getPhoneManagerHtml_() {
     line-height: 1.3;
   }
   .tab-btn.active { color: #fff; }
-  .tab-btn[data-group="softbank"].active { background: #4285F4; }
+  .tab-btn[data-group="softbank"].active { background: #1a1a1a; }
   .tab-btn[data-group="kddi"].active { background: #E94E1B; }
   .tab-btn[data-group="docomo"].active { background: #CC0033; }
   .carrier-badge { font-size: 14px; margin-right: 2px; }
@@ -304,7 +310,7 @@ function _getPhoneManagerHtml_() {
     return PDF_TYPES;
   }
   function getDefaultPdfType(c) {
-    if (c === "docomo") return "利用内訳";
+    if (c === "docomo") return "一括請求";
     if (c === "au" || c === "UQmobile") return "請求書,支払証明書";
     return "電話番号別";
   }
@@ -533,7 +539,7 @@ function savePhoneSelections(selections) {
     for (const carrier of ALL_CARRIERS) {
       const sel = selections[carrier] || {};
       for (const phone of Object.keys(sel)) {
-        const defaultPdfType = (carrier === "docomo") ? "利用内訳" : (carrier === "au" || carrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
+        const defaultPdfType = (carrier === "docomo") ? "一括請求" : (carrier === "au" || carrier === "UQmobile") ? "請求書,支払証明書" : "電話番号別";
         const pdfType = sel[phone].pdfType || defaultPdfType;
         const status = cancelledSet.has(phone) ? "解約済" : "契約中";
         if (status === "解約済") {
