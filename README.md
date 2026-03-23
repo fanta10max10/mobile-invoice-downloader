@@ -120,7 +120,7 @@ playwright install chromium
 - `キャリア` 列で SoftBank / Ymobile / au / UQmobile / docomo を自動フィルタリング
 - SoftBankは `電話番号別` / `一括` / `機種別` をカンマ区切りで複数指定可
 - au/UQは `請求書` / `領収書` / `支払証明書` をカンマ区切りで複数指定可
-- docomoは `一括請求`（デフォルト） / `利用内訳`（個別回線）を選択可
+- docomoは代表回線（設定シートで指定）のみ `一括請求` / `一括請求,利用内訳` を選択可。それ以外は `利用内訳` 固定
 - ログインID: SoftBank/Ymobile → SoftBank ID、au/UQ → au ID、docomo → dアカウントID（回線管理スプレッドシートの「ID」列から自動設定）
 - SoftBank/Ymobileは解約後SoftBank IDが必須（電話番号でログイン不可）。未設定時はエラー
 - 解約済回線もサイドバーで選択すればダウンロード対象になる
@@ -158,6 +158,7 @@ playwright install chromium
 | au/UQパスワード | au / UQ mobile 共通のau IDパスワード |
 | au暗証番号 | au / UQ mobile の4桁暗証番号（必要な場合） |
 | dアカウントパスワード | docomo のdアカウントパスワード |
+| docomo代表回線 | 一括請求をダウンロードする代表回線の電話番号（ハイフンなし）。代表回線のみ一括請求を選択可 |
 | 対象月 | ドロップダウン（「自動（前月）」= 前月自動） |
 
 ### 5. 環境変数（.env）
