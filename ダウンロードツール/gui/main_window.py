@@ -5,8 +5,9 @@ import socket
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QMainWindow,
+    QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QMainWindow,
     QPushButton, QStatusBar, QVBoxLayout, QWidget,
 )
 
@@ -56,15 +57,30 @@ class MainWindow(QMainWindow):
         # ── ヘッダー ──
         root_layout.addWidget(self._build_header())
 
-        # ── メインコンテンツ ──
+        # ── メインコンテンツ（オーロラ背景）──
         content_wrapper = QWidget()
-        content_wrapper.setStyleSheet(f"background: {BG_MAIN};")
+        content_wrapper.setStyleSheet(f"""
+            QWidget {{
+                background: qradialgradient(
+                    cx:0.75, cy:0.0, radius:0.9,
+                    fx:0.75, fy:0.0,
+                    stop:0   rgba(124, 58, 237, 18),
+                    stop:0.4 rgba(99, 102, 241, 8),
+                    stop:1   rgba(8, 8, 18, 255)
+                );
+            }}
+        """)
         cw_layout = QVBoxLayout(content_wrapper)
         cw_layout.setContentsMargins(20, 16, 20, 16)
         cw_layout.setSpacing(14)
 
-        # キャリアタブ
+        # キャリアタブ（カードシャドウ）
         self._carrier_tabs = CarrierTabs()
+        card_shadow = QGraphicsDropShadowEffect()
+        card_shadow.setBlurRadius(20)
+        card_shadow.setOffset(0, 6)
+        card_shadow.setColor(QColor(0, 0, 0, 100))
+        self._carrier_tabs.setGraphicsEffect(card_shadow)
         self._carrier_tabs.run_requested.connect(self._start_download)
         self._carrier_tabs.save_requested.connect(self._on_save_requested)
         self._carrier_tabs.save_and_run_requested.connect(self._on_save_and_run_requested)
@@ -194,6 +210,12 @@ class MainWindow(QMainWindow):
         self._all_btn = QPushButton("🚀  全キャリア一括実行")
         self._all_btn.setObjectName("accentBtn")
         self._all_btn.clicked.connect(self._start_all)
+        # バイオレットグロウシャドウ
+        glow = QGraphicsDropShadowEffect()
+        glow.setBlurRadius(28)
+        glow.setOffset(0, 4)
+        glow.setColor(QColor(124, 58, 237, 90))
+        self._all_btn.setGraphicsEffect(glow)
         row.addWidget(self._all_btn)
 
         self._amount_btn = QPushButton("💰  金額更新")
